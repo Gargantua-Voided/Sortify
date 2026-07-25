@@ -1,0 +1,8 @@
+{
+  "name": "Auto File Sorter",
+  "description": "An Electron desktop application for automatically sorting files by type, with system tray support and a settings dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
