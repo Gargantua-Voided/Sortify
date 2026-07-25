@@ -1,7 +1,7 @@
 <div align="center">
   <img src="logo.png" alt="Sortify Logo" width="128" height="128" />
   
-  # Auto File Sorter (Sortify)
+  # Sortify
 
   **A sleek, automated desktop application to organize your files seamlessly.**
 </div>

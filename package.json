@@ -1,5 +1,7 @@
 {
-  "name": "auto-file-sorter",
+  "name": "sortify",
+  "productName": "Sortify",
+  "author": "Gargantua-Voided",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -13,8 +15,8 @@
     "electron:start": "npm run build && electron ."
   },
   "build": {
-    "appId": "com.autofilesorter.app",
-    "productName": "Auto File Sorter",
+    "appId": "com.gargantuavoided.sortify",
+    "productName": "Sortify",
     "directories": {
       "output": "release"
     },

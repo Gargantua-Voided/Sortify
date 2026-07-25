@@ -19,6 +19,7 @@ declare global {
       selectDirectory: () => Promise<string | null>;
       onLogMessage: (callback: (data: LogMessage) => void) => void;
       removeLogListener: () => void;
+      windowControl?: (action: 'minimize' | 'maximize' | 'close') => void;
     };
   }
 }

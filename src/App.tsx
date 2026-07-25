@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Settings as SettingsIcon, ScrollText, FolderPlus, Trash2, Folder, Check, AlertCircle } from 'lucide-react';
 import { AppSettings, LogMessage } from './types';
+import logoSrc from '../logo.png';
 
 export default function App() {
   const api = window.electronAPI || {
@@ -126,9 +127,7 @@ export default function App() {
       <aside className="w-64 bg-[#0d1117] border-r border-slate-800 flex flex-col justify-between shrink-0">
         <div className="p-6 flex-1 flex flex-col">
           <div className="flex items-center gap-3 mb-10">
-            <div className="w-8 h-8 bg-sky-500 rounded flex items-center justify-center text-white shadow-[0_0_15px_rgba(14,165,233,0.3)]">
-              <Folder className="w-4 h-4" />
-            </div>
+            <img src={logoSrc} alt="Sortify Logo" className="w-10 h-10 object-contain drop-shadow-[0_0_15px_rgba(14,165,233,0.3)]" />
             <h1 className="text-xl font-bold tracking-tight text-white">Sortify <span className="text-sky-500 font-mono text-xs align-top font-normal">v1.0</span></h1>
           </div>
           
@@ -170,12 +169,12 @@ export default function App() {
       {/* Main Content View */}
       <main className="flex-1 flex flex-col overflow-hidden">
         {/* Windows Title Bar */}
-        <header className="h-10 flex items-center justify-between px-4 bg-[#0d1117] border-b border-slate-800 shrink-0">
+        <header className="h-10 flex items-center justify-between px-4 bg-[#0d1117] border-b border-slate-800 shrink-0" style={{ WebkitAppRegion: 'drag' } as any}>
           <div className="text-xs text-slate-500 font-medium">Sortify Desktop Manager</div>
           <div className="flex items-center h-full -mr-4" style={{ WebkitAppRegion: 'no-drag' } as any}>
-            <button className="h-full px-4 hover:bg-slate-800 flex items-center"><div className="w-3 h-0.5 bg-slate-400"></div></button>
-            <button className="h-full px-4 hover:bg-slate-800 flex items-center"><div className="w-3 h-3 border border-slate-400"></div></button>
-            <button className="h-full px-4 hover:bg-red-500 hover:text-white text-slate-400 transition-colors flex items-center">
+            <button onClick={() => window.electronAPI?.windowControl?.('minimize')} className="h-full px-4 hover:bg-slate-800 flex items-center"><div className="w-3 h-0.5 bg-slate-400"></div></button>
+            <button onClick={() => window.electronAPI?.windowControl?.('maximize')} className="h-full px-4 hover:bg-slate-800 flex items-center"><div className="w-3 h-3 border border-slate-400"></div></button>
+            <button onClick={() => window.electronAPI?.windowControl?.('close')} className="h-full px-4 hover:bg-red-500 hover:text-white text-slate-400 transition-colors flex items-center">
               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
           </div>

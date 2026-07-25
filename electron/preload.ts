@@ -9,5 +9,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   removeLogListener: () => {
     ipcRenderer.removeAllListeners('log-message');
-  }
+  },
+  windowControl: (action: 'minimize' | 'maximize' | 'close') => ipcRenderer.send('window-control', action)
 });

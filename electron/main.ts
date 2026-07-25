@@ -1,6 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog, Tray, Menu } from 'electron';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import fs from 'fs';
 import chokidar from 'chokidar';
 import AdmZip from 'adm-zip';
@@ -8,7 +7,7 @@ import AdmZip from 'adm-zip';
 // CommonJS equivalent for __dirname since we might build to CJS or ESM,
 // but since esbuild outputs CJS, we can just use __dirname.
 // Wait, esbuild with format=cjs wraps it, but just in case:
-const __dirname_mapped = typeof __dirname !== 'undefined' ? __dirname : path.dirname(fileURLToPath(import.meta.url));
+const __dirname_mapped = __dirname;
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -181,6 +180,9 @@ function createWindow() {
     width: 900,
     height: 700,
     show: false,
+    frame: false,
+    title: 'Sortify',
+    autoHideMenuBar: true,
     icon: path.join(__dirname_mapped, '../logo.png'),
     webPreferences: {
       preload: path.join(__dirname_mapped, 'preload.cjs'),
@@ -188,6 +190,8 @@ function createWindow() {
       contextIsolation: true,
     },
   });
+
+  mainWindow.setMenu(null);
 
   // Depending on env, load Vite dev server or local file
   const isDev = process.env.NODE_ENV !== 'production' && !app.isPackaged;
@@ -222,7 +226,7 @@ function createTray() {
       app.quit();
     }}
   ]);
-  tray.setToolTip('Auto File Sorter');
+  tray.setToolTip('Sortify');
   tray.setContextMenu(contextMenu);
 
   tray.on('click', () => {
@@ -242,6 +246,16 @@ ipcMain.handle('save-settings', (event, newSettings: AppSettings) => {
   return true;
 });
 
+ipcMain.on('window-control', (event, action) => {
+  if (!mainWindow) return;
+  if (action === 'minimize') mainWindow.minimize();
+  if (action === 'maximize') {
+    if (mainWindow.isMaximized()) mainWindow.unmaximize();
+    else mainWindow.maximize();
+  }
+  if (action === 'close') mainWindow.close();
+});
+
 ipcMain.handle('select-directory', async () => {
   if (!mainWindow) return null;
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -254,6 +268,10 @@ ipcMain.handle('select-directory', async () => {
 });
 
 // App Lifecycle
+app.name = 'Sortify';
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.gargantuavoided.sortify');
+}
 app.whenReady().then(() => {
   loadSettings();
   createWindow();
