@@ -4489,7 +4489,7 @@ var watcher = null;
 var SETTINGS_FILE = import_path.default.join(import_electron.app.getPath("userData"), "settings.json");
 var currentSettings = {
   autoUnzip: false,
-  autostart: false,
+  autostart: true,
   monitoredDirectories: [],
   scanInterval: 5,
   ignoredFileTypes: [".tmp", ".crdownload", ".part", ".ini"]
@@ -4500,6 +4500,13 @@ function loadSettings() {
       const data = import_fs.default.readFileSync(SETTINGS_FILE, "utf-8");
       currentSettings = { ...currentSettings, ...JSON.parse(data) };
     }
+    if (import_electron.app.isPackaged) {
+      import_electron.app.setLoginItemSettings({
+        openAtLogin: currentSettings.autostart,
+        path: process.execPath,
+        args: ["--hidden"]
+      });
+    }
   } catch (err) {
     console.error("Error loading settings:", err);
   }
@@ -4507,10 +4514,13 @@ function loadSettings() {
 function saveSettings() {
   try {
     import_fs.default.writeFileSync(SETTINGS_FILE, JSON.stringify(currentSettings, null, 2), "utf-8");
-    import_electron.app.setLoginItemSettings({
-      openAtLogin: currentSettings.autostart,
-      path: process.execPath
-    });
+    if (import_electron.app.isPackaged) {
+      import_electron.app.setLoginItemSettings({
+        openAtLogin: currentSettings.autostart,
+        path: process.execPath,
+        args: ["--hidden"]
+      });
+    }
   } catch (err) {
     console.error("Error saving settings:", err);
   }
@@ -4654,7 +4664,9 @@ function createWindow() {
     mainWindow.loadFile(import_path.default.join(__dirname_mapped, "../dist/index.html"));
   }
   mainWindow.on("ready-to-show", () => {
-    mainWindow?.show();
+    if (!process.argv.includes("--hidden")) {
+      mainWindow?.show();
+    }
   });
   mainWindow.on("close", (event) => {
     if (!import_electron.app.isQuiting) {
@@ -4707,25 +4719,37 @@ import_electron.ipcMain.handle("select-directory", async () => {
   }
   return null;
 });
-import_electron.app.name = "Sortify";
-if (process.platform === "win32") {
-  import_electron.app.setAppUserModelId("com.gargantuavoided.sortify");
-}
-import_electron.app.whenReady().then(() => {
-  loadSettings();
-  createWindow();
-  try {
-    createTray();
-  } catch (e) {
-    console.error("Could not create tray, maybe missing icon?", e);
-  }
-  setupWatcher();
-  import_electron.app.on("activate", () => {
-    if (import_electron.BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+var gotTheLock = import_electron.app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  import_electron.app.quit();
+} else {
+  import_electron.app.on("second-instance", (event, commandLine, workingDirectory) => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      if (!mainWindow.isVisible()) mainWindow.show();
+      mainWindow.focus();
     }
   });
-});
+  import_electron.app.name = "Sortify";
+  if (process.platform === "win32") {
+    import_electron.app.setAppUserModelId("com.gargantuavoided.sortify");
+  }
+  import_electron.app.whenReady().then(() => {
+    loadSettings();
+    createWindow();
+    try {
+      createTray();
+    } catch (e) {
+      console.error("Could not create tray, maybe missing icon?", e);
+    }
+    setupWatcher();
+    import_electron.app.on("activate", () => {
+      if (import_electron.BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      }
+    });
+  });
+}
 import_electron.app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     import_electron.app.quit();

@@ -26,7 +26,7 @@ const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
 
 let currentSettings: AppSettings = {
   autoUnzip: false,
-  autostart: false,
+  autostart: true,
   monitoredDirectories: [],
   scanInterval: 5,
   ignoredFileTypes: ['.tmp', '.crdownload', '.part', '.ini'],
@@ -39,6 +39,15 @@ function loadSettings() {
       const data = fs.readFileSync(SETTINGS_FILE, 'utf-8');
       currentSettings = { ...currentSettings, ...JSON.parse(data) };
     }
+    
+    // Ensure autostart is correctly set in OS registry, especially if app was updated or moved
+    if (app.isPackaged) {
+      app.setLoginItemSettings({
+        openAtLogin: currentSettings.autostart,
+        path: process.execPath,
+        args: ['--hidden']
+      });
+    }
   } catch (err) {
     console.error('Error loading settings:', err);
   }
@@ -49,10 +58,13 @@ function saveSettings() {
   try {
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(currentSettings, null, 2), 'utf-8');
     // Update autostart
-    app.setLoginItemSettings({
-      openAtLogin: currentSettings.autostart,
-      path: process.execPath,
-    });
+    if (app.isPackaged) {
+      app.setLoginItemSettings({
+        openAtLogin: currentSettings.autostart,
+        path: process.execPath,
+        args: ['--hidden']
+      });
+    }
   } catch (err) {
     console.error('Error saving settings:', err);
   }
@@ -203,7 +215,9 @@ function createWindow() {
   }
 
   mainWindow.on('ready-to-show', () => {
-    mainWindow?.show();
+    if (!process.argv.includes('--hidden')) {
+      mainWindow?.show();
+    }
   });
 
   mainWindow.on('close', (event) => {
@@ -268,26 +282,40 @@ ipcMain.handle('select-directory', async () => {
 });
 
 // App Lifecycle
-app.name = 'Sortify';
-if (process.platform === 'win32') {
-  app.setAppUserModelId('com.gargantuavoided.sortify');
-}
-app.whenReady().then(() => {
-  loadSettings();
-  createWindow();
-  try {
-    createTray();
-  } catch (e) {
-    console.error("Could not create tray, maybe missing icon?", e);
-  }
-  setupWatcher();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (event, commandLine, workingDirectory) => {
+    // Someone tried to run a second instance, we should focus our window.
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      if (!mainWindow.isVisible()) mainWindow.show();
+      mainWindow.focus();
     }
   });
-});
+
+  app.name = 'Sortify';
+  if (process.platform === 'win32') {
+    app.setAppUserModelId('com.gargantuavoided.sortify');
+  }
+  app.whenReady().then(() => {
+    loadSettings();
+    createWindow();
+    try {
+      createTray();
+    } catch (e) {
+      console.error("Could not create tray, maybe missing icon?", e);
+    }
+    setupWatcher();
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      }
+    });
+  });
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
