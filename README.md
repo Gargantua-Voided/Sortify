@@ -4,6 +4,11 @@
   # Sortify
 
   **A sleek, automated desktop application to organize your files seamlessly.**
+
+
+<img width="900" height="600" alt="image" src="https://github.com/user-attachments/assets/e9200b45-ad4a-4179-90c6-10804144ce7e" />
+
+
 </div>
 
 ---
