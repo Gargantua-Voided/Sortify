@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, Tray, Menu } from 'electron';
 import path from 'path';
 import fs from 'fs';
+import { execFileSync } from 'child_process';
 import chokidar from 'chokidar';
 import AdmZip from 'adm-zip';
 
@@ -9,14 +10,19 @@ import AdmZip from 'adm-zip';
 // Wait, esbuild with format=cjs wraps it, but just in case:
 const __dirname_mapped = __dirname;
 
+const AUTOSTART_REG_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+const AUTOSTART_VALUE_NAME = 'Sortify';
+
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let watcher: chokidar.FSWatcher | null = null;
+let isQuitting = false;
 
 // Settings structure
 interface AppSettings {
   autoUnzip: boolean;
   autostart: boolean;
+  launchMinimized: boolean;
   monitoredDirectories: string[];
   scanInterval: number;
   ignoredFileTypes: string[];
@@ -27,10 +33,70 @@ const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
 let currentSettings: AppSettings = {
   autoUnzip: false,
   autostart: true,
+  launchMinimized: false,
   monitoredDirectories: [],
   scanInterval: 5,
   ignoredFileTypes: ['.tmp', '.crdownload', '.part', '.ini'],
 };
+
+function shouldStartHidden(): boolean {
+  // Boot / shortcut args take priority; otherwise honor the setting for every startup.
+  if (process.argv.includes('--hidden') || process.argv.includes('--minimized')) {
+    return true;
+  }
+  return currentSettings.launchMinimized;
+}
+
+/**
+ * Windows Run-key entries break when the exe path contains spaces unless the
+ * entire command is quoted. Electron's setLoginItemSettings historically omits
+ * those quotes, so we write the registry value ourselves for reliability.
+ */
+function applyAutostartSettings() {
+  if (!app.isPackaged) return;
+
+  const loginArgs = currentSettings.launchMinimized ? ['--hidden'] : [];
+
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: currentSettings.autostart,
+      openAsHidden: currentSettings.launchMinimized,
+      name: AUTOSTART_VALUE_NAME,
+      path: process.execPath,
+      args: loginArgs,
+      enabled: currentSettings.autostart,
+    });
+  } catch (err) {
+    console.error('setLoginItemSettings failed:', err);
+  }
+
+  if (process.platform !== 'win32') return;
+
+  try {
+    if (currentSettings.autostart) {
+      const command = currentSettings.launchMinimized
+        ? `"${process.execPath}" --hidden`
+        : `"${process.execPath}"`;
+      execFileSync(
+        'reg',
+        ['add', AUTOSTART_REG_KEY, '/v', AUTOSTART_VALUE_NAME, '/t', 'REG_SZ', '/d', command, '/f'],
+        { stdio: 'ignore', windowsHide: true }
+      );
+    } else {
+      try {
+        execFileSync(
+          'reg',
+          ['delete', AUTOSTART_REG_KEY, '/v', AUTOSTART_VALUE_NAME, '/f'],
+          { stdio: 'ignore', windowsHide: true }
+        );
+      } catch {
+        // Value may not exist yet — that's fine.
+      }
+    }
+  } catch (err) {
+    console.error('Failed to update Windows autostart registry entry:', err);
+  }
+}
 
 // Load settings
 function loadSettings() {
@@ -39,15 +105,9 @@ function loadSettings() {
       const data = fs.readFileSync(SETTINGS_FILE, 'utf-8');
       currentSettings = { ...currentSettings, ...JSON.parse(data) };
     }
-    
+
     // Ensure autostart is correctly set in OS registry, especially if app was updated or moved
-    if (app.isPackaged) {
-      app.setLoginItemSettings({
-        openAtLogin: currentSettings.autostart,
-        path: process.execPath,
-        args: ['--hidden']
-      });
-    }
+    applyAutostartSettings();
   } catch (err) {
     console.error('Error loading settings:', err);
   }
@@ -57,14 +117,7 @@ function loadSettings() {
 function saveSettings() {
   try {
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(currentSettings, null, 2), 'utf-8');
-    // Update autostart
-    if (app.isPackaged) {
-      app.setLoginItemSettings({
-        openAtLogin: currentSettings.autostart,
-        path: process.execPath,
-        args: ['--hidden']
-      });
-    }
+    applyAutostartSettings();
   } catch (err) {
     console.error('Error saving settings:', err);
   }
@@ -189,8 +242,10 @@ function setupWatcher() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 900,
-    height: 700,
+    width: 1180,
+    height: 820,
+    minWidth: 900,
+    minHeight: 650,
     show: false,
     frame: false,
     title: 'Sortify',
@@ -215,13 +270,13 @@ function createWindow() {
   }
 
   mainWindow.on('ready-to-show', () => {
-    if (!process.argv.includes('--hidden')) {
+    if (!shouldStartHidden()) {
       mainWindow?.show();
     }
   });
 
   mainWindow.on('close', (event) => {
-    if (!app.isQuiting) {
+    if (!isQuitting) {
       event.preventDefault();
       mainWindow?.hide();
     }
@@ -236,7 +291,7 @@ function createTray() {
     { label: 'Show App', click: () => mainWindow?.show() },
     { type: 'separator' },
     { label: 'Quit', click: () => {
-      app.isQuiting = true;
+      isQuitting = true;
       app.quit();
     }}
   ]);
@@ -253,8 +308,8 @@ ipcMain.handle('get-settings', () => {
   return currentSettings;
 });
 
-ipcMain.handle('save-settings', (event, newSettings: AppSettings) => {
-  currentSettings = newSettings;
+ipcMain.handle('save-settings', (event, newSettings: Partial<AppSettings>) => {
+  currentSettings = { ...currentSettings, ...newSettings };
   saveSettings();
   setupWatcher();
   return true;
