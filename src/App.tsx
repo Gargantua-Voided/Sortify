@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Settings as SettingsIcon, ScrollText, FolderPlus, Trash2, Folder, Check, AlertCircle } from 'lucide-react';
-import { AppSettings, LogMessage } from './types';
+import { Settings as SettingsIcon, ScrollText, FolderPlus, Trash2, Folder, ImagePlus, Link2, X } from 'lucide-react';
+import { AppSettings, CATEGORIES, LogMessage } from './types';
 import logoSrc from '../logo.png';
 
 export default function App() {
@@ -11,10 +11,16 @@ export default function App() {
       launchMinimized: false,
       monitoredDirectories: [],
       scanInterval: 5,
-      ignoredFileTypes: []
+      ignoredFileTypes: [],
+      categoryIcons: {},
     }),
     saveSettings: async () => true,
     selectDirectory: async () => null,
+    selectImageFile: async () => null,
+    getCategories: async () => [...CATEGORIES],
+    setCategoryIcon: async () => ({ category: '', settings: await (window.electronAPI as any)?.getSettings?.() }),
+    clearCategoryIcon: async () => ({ category: '', settings: await (window.electronAPI as any)?.getSettings?.() }),
+    getCategoryIconPreviews: async () => ({}),
     onLogMessage: () => {},
     removeLogListener: () => {}
   };
@@ -23,11 +29,16 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [logs, setLogs] = useState<LogMessage[]>([]);
   const [newIgnoredType, setNewIgnoredType] = useState('');
+  const [iconPreviews, setIconPreviews] = useState<Record<string, string | null>>({});
+  const [urlInputs, setUrlInputs] = useState<Record<string, string>>({});
+  const [iconBusy, setIconBusy] = useState<string | null>(null);
+  const [iconError, setIconError] = useState<string | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     // Load initial settings
     api.getSettings().then(setSettings);
+    api.getCategoryIconPreviews().then(setIconPreviews);
 
     // Subscribe to logs
     api.onLogMessage((log) => {
@@ -120,6 +131,75 @@ export default function App() {
     }
   };
 
+  const handleBrowseCategoryIcon = async (category: string) => {
+    if (!api.selectImageFile || !api.setCategoryIcon) return;
+    setIconError(null);
+    const filePath = await api.selectImageFile();
+    if (!filePath) return;
+
+    setIconBusy(category);
+    try {
+      const result = await api.setCategoryIcon({
+        category,
+        sourceType: 'file',
+        value: filePath,
+      });
+      setSettings(result.settings);
+      setIconPreviews((prev) => ({
+        ...prev,
+        [category]: result.previewDataUrl ?? null,
+      }));
+    } catch (err) {
+      setIconError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIconBusy(null);
+    }
+  };
+
+  const handleUrlCategoryIcon = async (category: string) => {
+    if (!api.setCategoryIcon) return;
+    const url = (urlInputs[category] || '').trim();
+    if (!url) {
+      setIconError('Enter an image URL first');
+      return;
+    }
+
+    setIconError(null);
+    setIconBusy(category);
+    try {
+      const result = await api.setCategoryIcon({
+        category,
+        sourceType: 'url',
+        value: url,
+      });
+      setSettings(result.settings);
+      setIconPreviews((prev) => ({
+        ...prev,
+        [category]: result.previewDataUrl ?? null,
+      }));
+      setUrlInputs((prev) => ({ ...prev, [category]: '' }));
+    } catch (err) {
+      setIconError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIconBusy(null);
+    }
+  };
+
+  const handleClearCategoryIcon = async (category: string) => {
+    if (!api.clearCategoryIcon) return;
+    setIconError(null);
+    setIconBusy(category);
+    try {
+      const result = await api.clearCategoryIcon(category);
+      setSettings(result.settings);
+      setIconPreviews((prev) => ({ ...prev, [category]: null }));
+    } catch (err) {
+      setIconError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIconBusy(null);
+    }
+  };
+
   if (!settings) {
     return (
       <div className="flex h-screen w-full items-center justify-center bg-[#0a0c10] text-slate-400 font-sans">
@@ -188,7 +268,7 @@ export default function App() {
         </header>
 
         {/* Page Body */}
-        <div className="p-8 flex-1 overflow-hidden flex flex-col gap-6 w-full max-w-5xl mx-auto">
+        <div className="p-8 flex-1 overflow-y-auto flex flex-col gap-6 w-full max-w-5xl mx-auto">
           {activeTab === 'settings' && (
             <>
               <div className="shrink-0 mb-2">
@@ -196,7 +276,7 @@ export default function App() {
                 <p className="text-slate-400 mt-1 text-sm">Configure how files are sorted and managed on your system.</p>
               </div>
 
-              <div className="flex flex-col md:flex-row gap-6 flex-1 overflow-hidden">
+              <div className="flex flex-col md:flex-row gap-6 flex-1 min-h-[320px]">
                 {/* General Options */}
                 <div className="md:w-1/3 flex flex-col gap-6 shrink-0 overflow-y-auto pr-2">
                   <div className="bg-[#161b22] p-5 rounded-xl border border-slate-800 shrink-0">
@@ -321,6 +401,85 @@ export default function App() {
                       </table>
                     )}
                   </div>
+                </div>
+              </div>
+
+              {/* Category Folder Icons */}
+              <div className="bg-[#161b22] rounded-xl border border-slate-800 flex flex-col overflow-hidden shrink-0">
+                <div className="p-4 border-b border-slate-800 bg-slate-900/40 shrink-0">
+                  <h2 className="font-semibold text-white">Category Folder Icons</h2>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Browse a local image or paste a URL. Sortify converts it to .ico and applies it to that category folder in Explorer.
+                  </p>
+                  {iconError && (
+                    <p className="text-xs text-red-400 mt-2">{iconError}</p>
+                  )}
+                </div>
+                <div className="overflow-y-auto p-3 space-y-2">
+                  {CATEGORIES.map((category) => {
+                    const preview = iconPreviews[category];
+                    const busy = iconBusy === category;
+                    return (
+                      <div
+                        key={category}
+                        className="flex flex-col sm:flex-row sm:items-center gap-3 p-3 rounded-lg bg-[#0d1117]/40 border border-slate-800/80"
+                      >
+                        <div className="flex items-center gap-3 sm:w-40 shrink-0">
+                          <div className="w-10 h-10 rounded-md bg-slate-800 border border-slate-700 flex items-center justify-center overflow-hidden shrink-0">
+                            {preview ? (
+                              <img src={preview} alt={`${category} icon`} className="w-8 h-8 object-contain" />
+                            ) : (
+                              <Folder className="w-5 h-5 text-slate-600" />
+                            )}
+                          </div>
+                          <span className="text-sm text-slate-200 font-medium">{category}</span>
+                        </div>
+
+                        <div className="flex-1 flex flex-col sm:flex-row gap-2 min-w-0">
+                          <input
+                            type="url"
+                            placeholder="https://… image URL"
+                            value={urlInputs[category] || ''}
+                            onChange={(e) =>
+                              setUrlInputs((prev) => ({ ...prev, [category]: e.target.value }))
+                            }
+                            disabled={busy}
+                            className="flex-1 min-w-0 bg-[#0d1117] border border-slate-700 text-slate-300 rounded px-3 py-1.5 text-xs focus:outline-none focus:border-sky-500 transition-colors disabled:opacity-50"
+                          />
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              onClick={() => handleUrlCategoryIcon(category)}
+                              disabled={busy}
+                              title="Load from URL"
+                              className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 transition-colors disabled:opacity-50 flex items-center gap-1"
+                            >
+                              <Link2 className="w-3.5 h-3.5" />
+                              URL
+                            </button>
+                            <button
+                              onClick={() => handleBrowseCategoryIcon(category)}
+                              disabled={busy}
+                              title="Browse image from disk"
+                              className="px-2.5 py-1.5 bg-sky-600 hover:bg-sky-500 text-white text-xs rounded transition-colors disabled:opacity-50 flex items-center gap-1"
+                            >
+                              <ImagePlus className="w-3.5 h-3.5" />
+                              Browse
+                            </button>
+                            {preview && (
+                              <button
+                                onClick={() => handleClearCategoryIcon(category)}
+                                disabled={busy}
+                                title="Clear custom icon"
+                                className="px-2 py-1.5 text-slate-500 hover:text-red-400 hover:bg-slate-800 rounded transition-colors disabled:opacity-50"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </>
