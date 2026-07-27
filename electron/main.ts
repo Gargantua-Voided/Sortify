@@ -4,6 +4,14 @@ import fs from 'fs';
 import { execFileSync } from 'child_process';
 import chokidar from 'chokidar';
 import AdmZip from 'adm-zip';
+import {
+  CATEGORIES,
+  applyCategoryIconToMonitoredDirs,
+  convertSourceToCategoryIco,
+  ensureCategoryFolderIcon,
+  getCategoryIconPath,
+  iconFileToDataUrl,
+} from './categoryIcons';
 
 // CommonJS equivalent for __dirname since we might build to CJS or ESM,
 // but since esbuild outputs CJS, we can just use __dirname.
@@ -26,6 +34,8 @@ interface AppSettings {
   monitoredDirectories: string[];
   scanInterval: number;
   ignoredFileTypes: string[];
+  /** Absolute paths to per-category .ico files in userData */
+  categoryIcons: Record<string, string>;
 }
 
 const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
@@ -37,6 +47,7 @@ let currentSettings: AppSettings = {
   monitoredDirectories: [],
   scanInterval: 5,
   ignoredFileTypes: ['.tmp', '.crdownload', '.part', '.ini'],
+  categoryIcons: {},
 };
 
 function shouldStartHidden(): boolean {
@@ -103,7 +114,12 @@ function loadSettings() {
   try {
     if (fs.existsSync(SETTINGS_FILE)) {
       const data = fs.readFileSync(SETTINGS_FILE, 'utf-8');
-      currentSettings = { ...currentSettings, ...JSON.parse(data) };
+      const parsed = JSON.parse(data);
+      currentSettings = {
+        ...currentSettings,
+        ...parsed,
+        categoryIcons: { ...currentSettings.categoryIcons, ...(parsed.categoryIcons || {}) },
+      };
     }
 
     // Ensure autostart is correctly set in OS registry, especially if app was updated or moved
@@ -184,9 +200,13 @@ async function processFile(filePath: string) {
     const category = getCategoryForFile(filename);
     const targetDir = path.join(dir, category);
 
-    if (!fs.existsSync(targetDir)) {
+    const createdFolder = !fs.existsSync(targetDir);
+    if (createdFolder) {
       fs.mkdirSync(targetDir, { recursive: true });
     }
+
+    // Apply custom category icon (new folders, and re-assert on existing ones)
+    ensureCategoryFolderIcon(targetDir, category, currentSettings.categoryIcons);
 
     const targetPath = path.join(targetDir, filename);
     
@@ -309,9 +329,33 @@ ipcMain.handle('get-settings', () => {
 });
 
 ipcMain.handle('save-settings', (event, newSettings: Partial<AppSettings>) => {
-  currentSettings = { ...currentSettings, ...newSettings };
+  const previousDirs = [...currentSettings.monitoredDirectories];
+  currentSettings = {
+    ...currentSettings,
+    ...newSettings,
+    categoryIcons: newSettings.categoryIcons ?? currentSettings.categoryIcons,
+  };
   saveSettings();
   setupWatcher();
+
+  // When monitored dirs change, apply any custom icons to existing category folders
+  const dirsChanged =
+    previousDirs.length !== currentSettings.monitoredDirectories.length ||
+    previousDirs.some((d, i) => d !== currentSettings.monitoredDirectories[i]);
+
+  if (dirsChanged) {
+    for (const category of CATEGORIES) {
+      const icoPath = currentSettings.categoryIcons[category];
+      if (icoPath) {
+        applyCategoryIconToMonitoredDirs(
+          category,
+          currentSettings.monitoredDirectories,
+          icoPath
+        );
+      }
+    }
+  }
+
   return true;
 });
 
@@ -334,6 +378,101 @@ ipcMain.handle('select-directory', async () => {
     return result.filePaths[0];
   }
   return null;
+});
+
+ipcMain.handle('get-categories', () => CATEGORIES);
+
+ipcMain.handle('select-image-file', async () => {
+  if (!mainWindow) return null;
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile'],
+    filters: [
+      { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico'] },
+    ],
+  });
+  if (!result.canceled && result.filePaths.length > 0) {
+    return result.filePaths[0];
+  }
+  return null;
+});
+
+ipcMain.handle(
+  'set-category-icon',
+  async (
+    _event,
+    payload: { category: string; sourceType: 'file' | 'url'; value: string }
+  ) => {
+    const { category, sourceType, value } = payload;
+    if (!category || !value?.trim()) {
+      throw new Error('Category and image source are required');
+    }
+
+    const icoPath = await convertSourceToCategoryIco(category, {
+      type: sourceType,
+      value: value.trim(),
+    });
+
+    currentSettings.categoryIcons = {
+      ...currentSettings.categoryIcons,
+      [category]: icoPath,
+    };
+    saveSettings();
+    applyCategoryIconToMonitoredDirs(
+      category,
+      currentSettings.monitoredDirectories,
+      icoPath
+    );
+
+    sendLog(`Custom icon set for ${category} folders`);
+    return {
+      category,
+      iconPath: icoPath,
+      previewDataUrl: iconFileToDataUrl(icoPath),
+      settings: currentSettings,
+    };
+  }
+);
+
+ipcMain.handle('clear-category-icon', (_event, category: string) => {
+  if (!CATEGORIES.includes(category as (typeof CATEGORIES)[number])) {
+    throw new Error(`Unknown category: ${category}`);
+  }
+
+  const existing = currentSettings.categoryIcons[category];
+  applyCategoryIconToMonitoredDirs(category, currentSettings.monitoredDirectories, null);
+
+  if (existing && fs.existsSync(existing)) {
+    try {
+      fs.unlinkSync(existing);
+    } catch {
+      // ignore
+    }
+  }
+
+  // Also remove canonical path if different
+  const canonical = getCategoryIconPath(category);
+  if (canonical !== existing && fs.existsSync(canonical)) {
+    try {
+      fs.unlinkSync(canonical);
+    } catch {
+      // ignore
+    }
+  }
+
+  const { [category]: _removed, ...rest } = currentSettings.categoryIcons;
+  currentSettings.categoryIcons = rest;
+  saveSettings();
+  sendLog(`Custom icon cleared for ${category} folders`);
+  return { category, settings: currentSettings };
+});
+
+ipcMain.handle('get-category-icon-previews', () => {
+  const previews: Record<string, string | null> = {};
+  for (const category of CATEGORIES) {
+    const icoPath = currentSettings.categoryIcons[category];
+    previews[category] = icoPath ? iconFileToDataUrl(icoPath) : null;
+  }
+  return previews;
 });
 
 // App Lifecycle
