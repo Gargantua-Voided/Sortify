@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Settings as SettingsIcon, ScrollText, FolderPlus, Trash2, Folder, ImagePlus, Link2, X } from 'lucide-react';
+import { Settings as SettingsIcon, ScrollText, FolderPlus, Trash2, Folder, ImagePlus, Link2, X, Palette } from 'lucide-react';
 import { AppSettings, CATEGORIES, LogMessage } from './types';
 import logoSrc from '../logo.png';
+
+type AppTab = 'settings' | 'icons' | 'logs';
 
 export default function App() {
   const api = window.electronAPI || {
@@ -25,7 +27,7 @@ export default function App() {
     removeLogListener: () => {}
   };
 
-  const [activeTab, setActiveTab] = useState<'settings' | 'logs'>('settings');
+  const [activeTab, setActiveTab] = useState<AppTab>('settings');
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [logs, setLogs] = useState<LogMessage[]>([]);
   const [newIgnoredType, setNewIgnoredType] = useState('');
@@ -231,6 +233,17 @@ export default function App() {
               Settings
             </button>
             <button
+              onClick={() => setActiveTab('icons')}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-md font-medium transition-colors ${
+                activeTab === 'icons' 
+                  ? 'bg-slate-800 text-sky-400' 
+                  : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+              }`}
+            >
+              <Palette className="w-4 h-4" />
+              Custom Icons
+            </button>
+            <button
               onClick={() => setActiveTab('logs')}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-md font-medium transition-colors ${
                 activeTab === 'logs' 
@@ -268,7 +281,7 @@ export default function App() {
         </header>
 
         {/* Page Body */}
-        <div className="p-8 flex-1 overflow-y-auto flex flex-col gap-6 w-full max-w-5xl mx-auto">
+        <div className="p-8 flex-1 min-h-0 overflow-y-auto flex flex-col gap-6 w-full max-w-5xl mx-auto">
           {activeTab === 'settings' && (
             <>
               <div className="shrink-0 mb-2">
@@ -403,42 +416,51 @@ export default function App() {
                   </div>
                 </div>
               </div>
+            </>
+          )}
 
-              {/* Category Folder Icons */}
-              <div className="bg-[#161b22] rounded-xl border border-slate-800 flex flex-col overflow-hidden shrink-0">
-                <div className="p-4 border-b border-slate-800 bg-slate-900/40 shrink-0">
-                  <h2 className="font-semibold text-white">Category Folder Icons</h2>
-                  <p className="text-xs text-slate-500 mt-1">
-                    Browse a local image or paste a URL. Sortify converts it to .ico and applies it to that category folder in Explorer.
-                  </p>
-                  {iconError && (
-                    <p className="text-xs text-red-400 mt-2">{iconError}</p>
-                  )}
-                </div>
-                <div className="overflow-y-auto p-3 space-y-2">
+          {activeTab === 'icons' && (
+            <>
+              <div className="shrink-0 mb-2">
+                <h2 className="text-2xl font-bold tracking-tight text-white">Custom Icons</h2>
+                <p className="text-slate-400 mt-1 text-sm">
+                  Customize Explorer folder icons for each sort category. Browse a local image or paste a URL - Sortify converts it to .ico automatically.
+                </p>
+                {iconError && (
+                  <p className="text-sm text-red-400 mt-3">{iconError}</p>
+                )}
+              </div>
+
+              <div className="bg-[#161b22] rounded-xl border border-slate-800 flex flex-col overflow-hidden flex-1 min-h-0">
+                <div className="overflow-y-auto p-4 space-y-3 flex-1">
                   {CATEGORIES.map((category) => {
                     const preview = iconPreviews[category];
                     const busy = iconBusy === category;
                     return (
                       <div
                         key={category}
-                        className="flex flex-col sm:flex-row sm:items-center gap-3 p-3 rounded-lg bg-[#0d1117]/40 border border-slate-800/80"
+                        className="flex flex-col sm:flex-row sm:items-center gap-3 p-4 rounded-lg bg-[#0d1117]/40 border border-slate-800/80"
                       >
-                        <div className="flex items-center gap-3 sm:w-40 shrink-0">
-                          <div className="w-10 h-10 rounded-md bg-slate-800 border border-slate-700 flex items-center justify-center overflow-hidden shrink-0">
+                        <div className="flex items-center gap-3 sm:w-44 shrink-0">
+                          <div className="w-11 h-11 rounded-md bg-slate-800 border border-slate-700 flex items-center justify-center overflow-hidden shrink-0">
                             {preview ? (
                               <img src={preview} alt={`${category} icon`} className="w-8 h-8 object-contain" />
                             ) : (
                               <Folder className="w-5 h-5 text-slate-600" />
                             )}
                           </div>
-                          <span className="text-sm text-slate-200 font-medium">{category}</span>
+                          <div>
+                            <span className="text-sm text-slate-200 font-medium block">{category}</span>
+                            <span className="text-[11px] text-slate-500">
+                              {preview ? 'Custom icon set' : 'Default folder icon'}
+                            </span>
+                          </div>
                         </div>
 
                         <div className="flex-1 flex flex-col sm:flex-row gap-2 min-w-0">
                           <input
                             type="url"
-                            placeholder="https://… image URL"
+                            placeholder="https://... image URL"
                             value={urlInputs[category] || ''}
                             onChange={(e) =>
                               setUrlInputs((prev) => ({ ...prev, [category]: e.target.value }))
