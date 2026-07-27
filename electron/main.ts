@@ -11,6 +11,7 @@ import {
   ensureCategoryFolderIcon,
   getCategoryIconPath,
   iconFileToDataUrl,
+  isSortifyFolderMetaFile,
 } from './categoryIcons';
 
 // CommonJS equivalent for __dirname since we might build to CJS or ESM,
@@ -176,6 +177,10 @@ async function processFile(filePath: string) {
     const filename = path.basename(filePath);
     const ext = path.extname(filename).toLowerCase();
 
+    if (isSortifyFolderMetaFile(filePath)) {
+      return;
+    }
+
     if (currentSettings.ignoredFileTypes.includes(ext)) {
       return;
     }
@@ -231,6 +236,8 @@ function setupWatcher() {
 
   watcher = chokidar.watch(currentSettings.monitoredDirectories, {
     ignored: (filePath: string) => {
+      // ignore Sortify folder icon metadata
+      if (isSortifyFolderMetaFile(filePath)) return true;
       // ignore dotfiles
       if (/(^|[\/\\])\../.test(filePath)) return true;
       // ignore by extension

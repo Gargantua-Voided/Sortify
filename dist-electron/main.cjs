@@ -4488,6 +4488,7 @@ var import_adm_zip = __toESM(require_adm_zip(), 1);
 var import_electron = require("electron");
 var import_path = __toESM(require("path"), 1);
 var import_fs = __toESM(require("fs"), 1);
+var import_os = __toESM(require("os"), 1);
 var import_child_process = require("child_process");
 var CATEGORIES = [
   "Images",
@@ -4498,6 +4499,7 @@ var CATEGORIES = [
   "Executables",
   "Others"
 ];
+var FOLDER_ICON_FILENAME = "SortifyFolder.ico";
 var ICON_SIZES = [16, 32, 48, 256];
 function getCategoryIconsDir() {
   const dir = import_path.default.join(import_electron.app.getPath("userData"), "category-icons");
@@ -4508,6 +4510,10 @@ function getCategoryIconsDir() {
 }
 function getCategoryIconPath(category) {
   return import_path.default.join(getCategoryIconsDir(), `${category}.ico`);
+}
+function isSortifyFolderMetaFile(filePath) {
+  const name = import_path.default.basename(filePath).toLowerCase();
+  return name === "desktop.ini" || name === FOLDER_ICON_FILENAME.toLowerCase();
 }
 function pngBuffersToIco(pngBuffers) {
   const count = pngBuffers.length;
@@ -4555,6 +4561,32 @@ function imageToMultiSizeIco(image) {
   });
   return pngBuffersToIco(pngBuffers);
 }
+function loadImageFromFile(filePath) {
+  const buffer = import_fs.default.readFileSync(filePath);
+  if (buffer.length === 0) {
+    throw new Error("Image file is empty");
+  }
+  if (buffer.length > 15 * 1024 * 1024) {
+    throw new Error("Image is too large (max 15MB)");
+  }
+  let image = import_electron.nativeImage.createFromBuffer(buffer);
+  if (image.isEmpty()) {
+    image = import_electron.nativeImage.createFromPath(filePath);
+  }
+  if (image.isEmpty()) {
+    throw new Error("Could not decode image");
+  }
+  return image;
+}
+function stageSourceToTemp(filePath) {
+  const ext = import_path.default.extname(filePath) || ".img";
+  const tempPath = import_path.default.join(
+    import_os.default.tmpdir(),
+    `sortify-icon-src-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+  );
+  import_fs.default.writeFileSync(tempPath, import_fs.default.readFileSync(filePath));
+  return tempPath;
+}
 async function loadImageFromUrl(url) {
   const parsed = new URL(url);
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
@@ -4581,50 +4613,87 @@ async function loadImageFromUrl(url) {
   if (buffer.length > 15 * 1024 * 1024) {
     throw new Error("Image is too large (max 15MB)");
   }
-  return import_electron.nativeImage.createFromBuffer(buffer);
+  const image = import_electron.nativeImage.createFromBuffer(buffer);
+  if (image.isEmpty()) {
+    throw new Error("Could not decode image from URL");
+  }
+  return image;
 }
 async function convertSourceToCategoryIco(category, source) {
   if (!CATEGORIES.includes(category)) {
     throw new Error(`Unknown category: ${category}`);
   }
-  let image;
-  if (source.type === "file") {
-    if (!import_fs.default.existsSync(source.value)) {
-      throw new Error("Image file not found");
-    }
-    const ext = import_path.default.extname(source.value).toLowerCase();
-    const dest2 = getCategoryIconPath(category);
-    if (ext === ".ico") {
-      import_fs.default.copyFileSync(source.value, dest2);
-      return dest2;
-    }
-    image = import_electron.nativeImage.createFromPath(source.value);
-  } else {
-    image = await loadImageFromUrl(source.value);
-  }
-  const ico = imageToMultiSizeIco(image);
   const dest = getCategoryIconPath(category);
-  import_fs.default.writeFileSync(dest, ico);
-  return dest;
+  let stagedTemp = null;
+  try {
+    if (source.type === "file") {
+      if (!import_fs.default.existsSync(source.value)) {
+        throw new Error("Image file not found");
+      }
+      stagedTemp = stageSourceToTemp(source.value);
+      const ext = import_path.default.extname(stagedTemp).toLowerCase();
+      if (ext === ".ico") {
+        import_fs.default.writeFileSync(dest, import_fs.default.readFileSync(stagedTemp));
+        return dest;
+      }
+      const image2 = loadImageFromFile(stagedTemp);
+      import_fs.default.writeFileSync(dest, imageToMultiSizeIco(image2));
+      return dest;
+    }
+    const image = await loadImageFromUrl(source.value);
+    import_fs.default.writeFileSync(dest, imageToMultiSizeIco(image));
+    return dest;
+  } finally {
+    if (stagedTemp) {
+      try {
+        import_fs.default.unlinkSync(stagedTemp);
+      } catch {
+      }
+    }
+  }
+}
+function clearFileAttribs(filePath) {
+  try {
+    (0, import_child_process.execFileSync)("attrib", ["-h", "-s", "-r", filePath], { stdio: "ignore", windowsHide: true });
+  } catch {
+  }
+}
+function notifyShellFolderUpdate(folderPath) {
+  try {
+    const ps = [
+      'Add-Type -Namespace Sortify -Name Shell32 -MemberDefinition @"',
+      '[DllImport("shell32.dll", CharSet=CharSet.Unicode)] public static extern void SHChangeNotify(int wEventId, uint uFlags, string dwItem1, string dwItem2);',
+      '"@;',
+      `[Sortify.Shell32]::SHChangeNotify(0x1000, 0x0005, '${folderPath.replace(/'/g, "''")}', $null);`,
+      "[Sortify.Shell32]::SHChangeNotify(0x08000000, 0x0000, $null, $null);"
+    ].join(" ");
+    (0, import_child_process.execFileSync)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", ps], {
+      stdio: "ignore",
+      windowsHide: true,
+      timeout: 8e3
+    });
+  } catch {
+  }
 }
 function applyFolderIcon(folderPath, icoPath) {
   if (process.platform !== "win32") return;
   if (!import_fs.default.existsSync(folderPath) || !import_fs.default.existsSync(icoPath)) return;
   const desktopIniPath = import_path.default.join(folderPath, "desktop.ini");
-  const iconResource = icoPath.replace(/\//g, "\\");
+  const localIcoPath = import_path.default.join(folderPath, FOLDER_ICON_FILENAME);
   const contents = `[.ShellClassInfo]\r
-IconResource=${iconResource},0\r
-IconFile=${iconResource}\r
+IconResource=${FOLDER_ICON_FILENAME},0\r
+IconFile=${FOLDER_ICON_FILENAME}\r
 IconIndex=0\r
 `;
   try {
-    try {
-      (0, import_child_process.execFileSync)("attrib", ["-h", "-s", desktopIniPath], { stdio: "ignore", windowsHide: true });
-    } catch {
-    }
+    clearFileAttribs(desktopIniPath);
+    clearFileAttribs(localIcoPath);
+    import_fs.default.writeFileSync(localIcoPath, import_fs.default.readFileSync(icoPath));
     import_fs.default.writeFileSync(desktopIniPath, contents, "utf8");
     (0, import_child_process.execFileSync)("attrib", ["+r", folderPath], { stdio: "ignore", windowsHide: true });
+    (0, import_child_process.execFileSync)("attrib", ["+h", "+s", localIcoPath], { stdio: "ignore", windowsHide: true });
     (0, import_child_process.execFileSync)("attrib", ["+h", "+s", desktopIniPath], { stdio: "ignore", windowsHide: true });
+    notifyShellFolderUpdate(folderPath);
   } catch (err) {
     console.error(`Failed to apply folder icon to ${folderPath}:`, err);
     throw err;
@@ -4633,17 +4702,21 @@ IconIndex=0\r
 function clearFolderIcon(folderPath) {
   if (process.platform !== "win32") return;
   const desktopIniPath = import_path.default.join(folderPath, "desktop.ini");
-  if (!import_fs.default.existsSync(desktopIniPath)) return;
+  const localIcoPath = import_path.default.join(folderPath, FOLDER_ICON_FILENAME);
   try {
-    try {
-      (0, import_child_process.execFileSync)("attrib", ["-h", "-s", desktopIniPath], { stdio: "ignore", windowsHide: true });
-    } catch {
+    for (const filePath of [desktopIniPath, localIcoPath]) {
+      if (!import_fs.default.existsSync(filePath)) continue;
+      clearFileAttribs(filePath);
+      try {
+        import_fs.default.unlinkSync(filePath);
+      } catch {
+      }
     }
-    import_fs.default.unlinkSync(desktopIniPath);
     try {
       (0, import_child_process.execFileSync)("attrib", ["-r", folderPath], { stdio: "ignore", windowsHide: true });
     } catch {
     }
+    notifyShellFolderUpdate(folderPath);
   } catch (err) {
     console.error(`Failed to clear folder icon on ${folderPath}:`, err);
   }
@@ -4670,10 +4743,13 @@ function ensureCategoryFolderIcon(folderPath, category, categoryIcons) {
 function iconFileToDataUrl(icoPath) {
   if (!icoPath || !import_fs.default.existsSync(icoPath)) return null;
   try {
-    const image = import_electron.nativeImage.createFromPath(icoPath);
+    const buffer = import_fs.default.readFileSync(icoPath);
+    let image = import_electron.nativeImage.createFromBuffer(buffer);
     if (image.isEmpty()) {
-      const buf = import_fs.default.readFileSync(icoPath);
-      return `data:image/x-icon;base64,${buf.toString("base64")}`;
+      image = import_electron.nativeImage.createFromPath(icoPath);
+    }
+    if (image.isEmpty()) {
+      return `data:image/x-icon;base64,${buffer.toString("base64")}`;
     }
     const png = image.resize({ width: 48, height: 48, quality: "best" }).toPNG();
     return `data:image/png;base64,${png.toString("base64")}`;
@@ -4824,6 +4900,9 @@ async function processFile(filePath) {
     const dir = import_path2.default.dirname(filePath);
     const filename = import_path2.default.basename(filePath);
     const ext = import_path2.default.extname(filename).toLowerCase();
+    if (isSortifyFolderMetaFile(filePath)) {
+      return;
+    }
     if (currentSettings.ignoredFileTypes.includes(ext)) {
       return;
     }
@@ -4862,6 +4941,7 @@ function setupWatcher() {
   if (currentSettings.monitoredDirectories.length === 0) return;
   watcher = chokidar_default.watch(currentSettings.monitoredDirectories, {
     ignored: (filePath) => {
+      if (isSortifyFolderMetaFile(filePath)) return true;
       if (/(^|[\/\\])\../.test(filePath)) return true;
       const ext = import_path2.default.extname(filePath).toLowerCase();
       if (currentSettings.ignoredFileTypes.includes(ext)) return true;
