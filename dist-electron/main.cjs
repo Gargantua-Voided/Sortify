@@ -2747,6 +2747,7 @@ var require_adm_zip = __commonJS({
 var import_electron = require("electron");
 var import_path = __toESM(require("path"), 1);
 var import_fs = __toESM(require("fs"), 1);
+var import_child_process = require("child_process");
 
 // node_modules/chokidar/index.js
 var import_node_events = require("node:events");
@@ -4483,30 +4484,72 @@ var chokidar_default = { watch, FSWatcher };
 // electron/main.ts
 var import_adm_zip = __toESM(require_adm_zip(), 1);
 var __dirname_mapped = __dirname;
+var AUTOSTART_REG_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+var AUTOSTART_VALUE_NAME = "Sortify";
 var mainWindow = null;
 var tray = null;
 var watcher = null;
+var isQuitting = false;
 var SETTINGS_FILE = import_path.default.join(import_electron.app.getPath("userData"), "settings.json");
 var currentSettings = {
   autoUnzip: false,
   autostart: true,
+  launchMinimized: false,
   monitoredDirectories: [],
   scanInterval: 5,
   ignoredFileTypes: [".tmp", ".crdownload", ".part", ".ini"]
 };
+function shouldStartHidden() {
+  if (process.argv.includes("--hidden") || process.argv.includes("--minimized")) {
+    return true;
+  }
+  return currentSettings.launchMinimized;
+}
+function applyAutostartSettings() {
+  if (!import_electron.app.isPackaged) return;
+  const loginArgs = currentSettings.launchMinimized ? ["--hidden"] : [];
+  try {
+    import_electron.app.setLoginItemSettings({
+      openAtLogin: currentSettings.autostart,
+      openAsHidden: currentSettings.launchMinimized,
+      name: AUTOSTART_VALUE_NAME,
+      path: process.execPath,
+      args: loginArgs,
+      enabled: currentSettings.autostart
+    });
+  } catch (err) {
+    console.error("setLoginItemSettings failed:", err);
+  }
+  if (process.platform !== "win32") return;
+  try {
+    if (currentSettings.autostart) {
+      const command = currentSettings.launchMinimized ? `"${process.execPath}" --hidden` : `"${process.execPath}"`;
+      (0, import_child_process.execFileSync)(
+        "reg",
+        ["add", AUTOSTART_REG_KEY, "/v", AUTOSTART_VALUE_NAME, "/t", "REG_SZ", "/d", command, "/f"],
+        { stdio: "ignore", windowsHide: true }
+      );
+    } else {
+      try {
+        (0, import_child_process.execFileSync)(
+          "reg",
+          ["delete", AUTOSTART_REG_KEY, "/v", AUTOSTART_VALUE_NAME, "/f"],
+          { stdio: "ignore", windowsHide: true }
+        );
+      } catch {
+      }
+    }
+  } catch (err) {
+    console.error("Failed to update Windows autostart registry entry:", err);
+  }
+}
 function loadSettings() {
   try {
     if (import_fs.default.existsSync(SETTINGS_FILE)) {
       const data = import_fs.default.readFileSync(SETTINGS_FILE, "utf-8");
       currentSettings = { ...currentSettings, ...JSON.parse(data) };
     }
-    if (import_electron.app.isPackaged) {
-      import_electron.app.setLoginItemSettings({
-        openAtLogin: currentSettings.autostart,
-        path: process.execPath,
-        args: ["--hidden"]
-      });
-    }
+    applyAutostartSettings();
   } catch (err) {
     console.error("Error loading settings:", err);
   }
@@ -4514,13 +4557,7 @@ function loadSettings() {
 function saveSettings() {
   try {
     import_fs.default.writeFileSync(SETTINGS_FILE, JSON.stringify(currentSettings, null, 2), "utf-8");
-    if (import_electron.app.isPackaged) {
-      import_electron.app.setLoginItemSettings({
-        openAtLogin: currentSettings.autostart,
-        path: process.execPath,
-        args: ["--hidden"]
-      });
-    }
+    applyAutostartSettings();
   } catch (err) {
     console.error("Error saving settings:", err);
   }
@@ -4643,8 +4680,10 @@ function setupWatcher() {
 }
 function createWindow() {
   mainWindow = new import_electron.BrowserWindow({
-    width: 900,
-    height: 700,
+    width: 1180,
+    height: 820,
+    minWidth: 900,
+    minHeight: 650,
     show: false,
     frame: false,
     title: "Sortify",
@@ -4664,12 +4703,12 @@ function createWindow() {
     mainWindow.loadFile(import_path.default.join(__dirname_mapped, "../dist/index.html"));
   }
   mainWindow.on("ready-to-show", () => {
-    if (!process.argv.includes("--hidden")) {
+    if (!shouldStartHidden()) {
       mainWindow?.show();
     }
   });
   mainWindow.on("close", (event) => {
-    if (!import_electron.app.isQuiting) {
+    if (!isQuitting) {
       event.preventDefault();
       mainWindow?.hide();
     }
@@ -4681,7 +4720,7 @@ function createTray() {
     { label: "Show App", click: () => mainWindow?.show() },
     { type: "separator" },
     { label: "Quit", click: () => {
-      import_electron.app.isQuiting = true;
+      isQuitting = true;
       import_electron.app.quit();
     } }
   ]);
@@ -4695,7 +4734,7 @@ import_electron.ipcMain.handle("get-settings", () => {
   return currentSettings;
 });
 import_electron.ipcMain.handle("save-settings", (event, newSettings) => {
-  currentSettings = newSettings;
+  currentSettings = { ...currentSettings, ...newSettings };
   saveSettings();
   setupWatcher();
   return true;

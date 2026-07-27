@@ -8,6 +8,7 @@ export default function App() {
     getSettings: async () => ({
       autoUnzip: false,
       autostart: false,
+      launchMinimized: false,
       monitoredDirectories: [],
       scanInterval: 5,
       ignoredFileTypes: []
@@ -58,6 +59,12 @@ export default function App() {
   const toggleAutostart = () => {
     if (settings) {
       handleSaveSettings({ ...settings, autostart: !settings.autostart });
+    }
+  };
+
+  const toggleLaunchMinimized = () => {
+    if (settings) {
+      handleSaveSettings({ ...settings, launchMinimized: !settings.launchMinimized });
     }
   };
 
@@ -211,6 +218,15 @@ export default function App() {
                           onClick={toggleAutostart}
                         >
                           <div className={`w-3 h-3 bg-white rounded-full transition-all ${settings.autostart ? 'ml-auto' : 'bg-slate-400'}`}></div>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <label className="text-sm text-slate-400 flex-1 pr-4">Launch Minimized</label>
+                        <div 
+                          className={`w-10 h-5 rounded-full flex items-center px-1 relative cursor-pointer transition-colors ${settings.launchMinimized ? 'bg-sky-600' : 'bg-slate-700'}`}
+                          onClick={toggleLaunchMinimized}
+                        >
+                          <div className={`w-3 h-3 bg-white rounded-full transition-all ${settings.launchMinimized ? 'ml-auto' : 'bg-slate-400'}`}></div>
                         </div>
                       </div>
                       

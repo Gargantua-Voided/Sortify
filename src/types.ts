@@ -1,6 +1,7 @@
 export interface AppSettings {
   autoUnzip: boolean;
   autostart: boolean;
+  launchMinimized: boolean;
   monitoredDirectories: string[];
   scanInterval: number;
   ignoredFileTypes: string[];
