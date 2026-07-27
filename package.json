@@ -28,6 +28,14 @@
     "win": {
       "target": "nsis",
       "icon": "logo.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Sortify"
     }
   },
   "dependencies": {
