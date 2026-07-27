@@ -14,6 +14,7 @@ Write-Host "Building the React app and Electron scripts..." -ForegroundColor Yel
 npm run build
 
 Write-Host "Packaging the application with Electron Builder..." -ForegroundColor Yellow
+Write-Host "NSIS one-click is disabled — the installer will let users choose the install directory." -ForegroundColor DarkGray
 npx electron-builder --win --x64
 
 Write-Host "Build complete! Check the release directory for the installer." -ForegroundColor Green
