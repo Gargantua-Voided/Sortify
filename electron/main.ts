@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Tray, Menu } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import { execFileSync } from 'child_process';
@@ -19,8 +19,10 @@ import {
 // Wait, esbuild with format=cjs wraps it, but just in case:
 const __dirname_mapped = __dirname;
 
+const AUTOSTART_NAME = 'Sortify';
 const AUTOSTART_REG_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
-const AUTOSTART_VALUE_NAME = 'Sortify';
+const AUTOSTART_APPROVED_KEY =
+  'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -30,6 +32,7 @@ let isQuitting = false;
 // Settings structure
 interface AppSettings {
   autoUnzip: boolean;
+  autoRename: boolean;
   autostart: boolean;
   launchMinimized: boolean;
   monitoredDirectories: string[];
@@ -43,6 +46,7 @@ const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
 
 let currentSettings: AppSettings = {
   autoUnzip: false,
+  autoRename: true,
   autostart: true,
   launchMinimized: false,
   monitoredDirectories: [],
@@ -59,54 +63,107 @@ function shouldStartHidden(): boolean {
   return currentSettings.launchMinimized;
 }
 
+function getStartupShortcutPath(): string {
+  return path.join(
+    app.getPath('appData'),
+    'Microsoft',
+    'Windows',
+    'Start Menu',
+    'Programs',
+    'Startup',
+    `${AUTOSTART_NAME}.lnk`
+  );
+}
+
+/** Remove leftover HKCU Run entries from the old autostart implementation. */
+function removeLegacyRunAutostart() {
+  if (process.platform !== 'win32') return;
+
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: false,
+      name: AUTOSTART_NAME,
+      path: process.execPath,
+    });
+  } catch {
+    // ignore
+  }
+
+  for (const key of [AUTOSTART_REG_KEY, AUTOSTART_APPROVED_KEY]) {
+    try {
+      execFileSync('reg', ['delete', key, '/v', AUTOSTART_NAME, '/f'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+    } catch {
+      // Value may not exist — that's fine.
+    }
+  }
+}
+
+function removeStartupShortcut() {
+  const shortcutPath = getStartupShortcutPath();
+  try {
+    if (fs.existsSync(shortcutPath)) {
+      fs.unlinkSync(shortcutPath);
+    }
+  } catch (err) {
+    console.error('Failed to remove Startup shortcut:', err);
+  }
+}
+
 /**
- * Windows Run-key entries break when the exe path contains spaces unless the
- * entire command is quoted. Electron's setLoginItemSettings historically omits
- * those quotes, so we write the registry value ourselves for reliability.
+ * Prefer a Startup-folder .lnk on Windows. Run-key / setLoginItemSettings
+ * often show up in Task Manager on Win11 but never actually launch (StartupApproved
+ * disable blobs, quoting races, Fast Startup edge cases). A shell:Startup shortcut
+ * is simpler and more reliable for tray apps.
  */
 function applyAutostartSettings() {
   if (!app.isPackaged) return;
 
-  const loginArgs = currentSettings.launchMinimized ? ['--hidden'] : [];
+  if (process.platform === 'win32') {
+    // Always drop the old registry approach so we don't double-start or keep a dead entry.
+    removeLegacyRunAutostart();
 
+    try {
+      if (currentSettings.autostart) {
+        const shortcutPath = getStartupShortcutPath();
+        const args = currentSettings.launchMinimized ? '--hidden' : '';
+        const workingDir = path.dirname(process.execPath);
+        // PowerShell + WScript.Shell is the no-deps way to write a proper .lnk
+        const script = [
+          `$ws = New-Object -ComObject WScript.Shell`,
+          `$s = $ws.CreateShortcut(${JSON.stringify(shortcutPath)})`,
+          `$s.TargetPath = ${JSON.stringify(process.execPath)}`,
+          `$s.Arguments = ${JSON.stringify(args)}`,
+          `$s.WorkingDirectory = ${JSON.stringify(workingDir)}`,
+          `$s.Description = ${JSON.stringify(AUTOSTART_NAME)}`,
+          `$s.Save()`,
+        ].join('; ');
+
+        execFileSync(
+          'powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+          { stdio: 'ignore', windowsHide: true }
+        );
+      } else {
+        removeStartupShortcut();
+      }
+    } catch (err) {
+      console.error('Failed to update Windows Startup shortcut:', err);
+    }
+    return;
+  }
+
+  // Non-Windows: Electron's login-item API is fine.
   try {
     app.setLoginItemSettings({
       openAtLogin: currentSettings.autostart,
       openAsHidden: currentSettings.launchMinimized,
-      name: AUTOSTART_VALUE_NAME,
-      path: process.execPath,
-      args: loginArgs,
-      enabled: currentSettings.autostart,
+      args: currentSettings.launchMinimized ? ['--hidden'] : [],
     });
   } catch (err) {
     console.error('setLoginItemSettings failed:', err);
-  }
-
-  if (process.platform !== 'win32') return;
-
-  try {
-    if (currentSettings.autostart) {
-      const command = currentSettings.launchMinimized
-        ? `"${process.execPath}" --hidden`
-        : `"${process.execPath}"`;
-      execFileSync(
-        'reg',
-        ['add', AUTOSTART_REG_KEY, '/v', AUTOSTART_VALUE_NAME, '/t', 'REG_SZ', '/d', command, '/f'],
-        { stdio: 'ignore', windowsHide: true }
-      );
-    } else {
-      try {
-        execFileSync(
-          'reg',
-          ['delete', AUTOSTART_REG_KEY, '/v', AUTOSTART_VALUE_NAME, '/f'],
-          { stdio: 'ignore', windowsHide: true }
-        );
-      } catch {
-        // Value may not exist yet — that's fine.
-      }
-    }
-  } catch (err) {
-    console.error('Failed to update Windows autostart registry entry:', err);
   }
 }
 
@@ -123,8 +180,8 @@ function loadSettings() {
       };
     }
 
-    // Ensure autostart is correctly set in OS registry, especially if app was updated or moved
-    applyAutostartSettings();
+    // Autostart is applied after the window opens (see whenReady) so PowerShell
+    // shortcut work doesn't block first paint. Still applied on saveSettings().
   } catch (err) {
     console.error('Error loading settings:', err);
   }
@@ -213,18 +270,45 @@ async function processFile(filePath: string) {
     // Apply custom category icon (new folders, and re-assert on existing ones)
     ensureCategoryFolderIcon(targetDir, category, currentSettings.categoryIcons);
 
-    const targetPath = path.join(targetDir, filename);
-    
+    let targetPath = path.join(targetDir, filename);
+
     // Avoid moving if it's already there
-    if (filePath !== targetPath) {
-      // simple rename (might fail across partitions, but okay for same dir)
-      fs.renameSync(filePath, targetPath);
+    if (filePath === targetPath) return;
+
+    if (fs.existsSync(targetPath)) {
+      if (!currentSettings.autoRename) {
+        sendLog(`Skipped ${filename}: already exists in ${category}`);
+        return;
+      }
+      targetPath = getUniqueTargetPath(targetDir, filename);
+    }
+
+    // simple rename (might fail across partitions, but okay for same dir)
+    fs.renameSync(filePath, targetPath);
+    const movedName = path.basename(targetPath);
+    if (movedName !== filename) {
+      sendLog(`Moved ${filename} → ${category}/${movedName} (renamed)`);
+    } else {
       sendLog(`Moved ${filename} to ${category} folder`);
     }
 
   } catch (error) {
     sendLog(`Error processing ${filePath}: ${String(error)}`);
   }
+}
+
+/** photo.jpg → photo (1).jpg, photo (2).jpg, … until free */
+function getUniqueTargetPath(targetDir: string, filename: string): string {
+  const ext = path.extname(filename);
+  const base = path.basename(filename, ext);
+  let n = 1;
+  while (n < 10000) {
+    const candidate = path.join(targetDir, `${base} (${n})${ext}`);
+    if (!fs.existsSync(candidate)) return candidate;
+    n++;
+  }
+  // Extremely unlikely fallback
+  return path.join(targetDir, `${base} (${Date.now()})${ext}`);
 }
 
 function setupWatcher() {
@@ -267,17 +351,55 @@ function setupWatcher() {
   sendLog(`Started monitoring ${currentSettings.monitoredDirectories.length} directories`);
 }
 
+function getAppLogoPath() {
+  return path.join(__dirname_mapped, '../logo.png');
+}
+
+/**
+ * Auto-build a small tray icon from root logo.png and cache it in userData.
+ * Don't ship a separate tray asset — one logo.png is the source of truth.
+ */
+function getTrayIcon() {
+  const logoPath = getAppLogoPath();
+  const size = process.platform === 'win32' ? 64 : 22;
+  const cachePath = path.join(app.getPath('userData'), `tray-icon-${size}.png`);
+
+  try {
+    if (fs.existsSync(cachePath) && fs.existsSync(logoPath)) {
+      const cacheStat = fs.statSync(cachePath);
+      const logoStat = fs.statSync(logoPath);
+      if (cacheStat.mtimeMs >= logoStat.mtimeMs) {
+        const cached = nativeImage.createFromPath(cachePath);
+        if (!cached.isEmpty()) return cached;
+      }
+    }
+  } catch {
+    // regenerate below
+  }
+
+  const full = nativeImage.createFromPath(logoPath);
+  if (full.isEmpty()) return logoPath;
+
+  const small = full.resize({ width: size, height: size, quality: 'better' });
+  try {
+    fs.writeFileSync(cachePath, small.toPNG());
+  } catch (err) {
+    console.error('Failed to cache tray icon:', err);
+  }
+  return small;
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1180,
-    height: 820,
-    minWidth: 900,
-    minHeight: 650,
+    width: 1360,
+    height: 940,
+    minWidth: 980,
+    minHeight: 700,
     show: false,
     frame: false,
     title: 'Sortify',
     autoHideMenuBar: true,
-    icon: path.join(__dirname_mapped, '../logo.png'),
+    icon: getAppLogoPath(),
     webPreferences: {
       preload: path.join(__dirname_mapped, 'preload.cjs'),
       nodeIntegration: false,
@@ -287,14 +409,8 @@ function createWindow() {
 
   mainWindow.setMenu(null);
 
-  // Depending on env, load Vite dev server or local file
-  const isDev = process.env.NODE_ENV !== 'production' && !app.isPackaged;
-  if (isDev) {
-    // Connect to the Vite dev server running on port 3000
-    mainWindow.loadURL('http://localhost:3000');
-  } else {
-    mainWindow.loadFile(path.join(__dirname_mapped, '../dist/index.html'));
-  }
+  // Always load built UI from disk (no Vite server / no hot reload)
+  mainWindow.loadFile(path.join(__dirname_mapped, '../dist/index.html'));
 
   mainWindow.on('ready-to-show', () => {
     if (!shouldStartHidden()) {
@@ -311,9 +427,7 @@ function createWindow() {
 }
 
 function createTray() {
-  // Use a generic icon if none provided. A robust app would include an icon file.
-  // For demonstration, we'll try to find an icon or just fail gracefully.
-  tray = new Tray(path.join(__dirname_mapped, '../logo.png')); // Using logo.png as icon
+  tray = new Tray(getTrayIcon());
   const contextMenu = Menu.buildFromTemplate([
     { label: 'Show App', click: () => mainWindow?.show() },
     { type: 'separator' },
@@ -509,6 +623,15 @@ if (!gotTheLock) {
       console.error("Could not create tray, maybe missing icon?", e);
     }
     setupWatcher();
+
+    // Defer Startup shortcut / registry work so first paint isn't blocked by PowerShell
+    setImmediate(() => {
+      try {
+        applyAutostartSettings();
+      } catch (e) {
+        console.error('Deferred autostart failed:', e);
+      }
+    });
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

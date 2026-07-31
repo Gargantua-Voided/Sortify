@@ -9,6 +9,7 @@ export default function App() {
   const api = window.electronAPI || {
     getSettings: async () => ({
       autoUnzip: false,
+      autoRename: true,
       autostart: false,
       launchMinimized: false,
       monitoredDirectories: [],
@@ -66,6 +67,12 @@ export default function App() {
   const toggleAutoUnzip = () => {
     if (settings) {
       handleSaveSettings({ ...settings, autoUnzip: !settings.autoUnzip });
+    }
+  };
+
+  const toggleAutoRename = () => {
+    if (settings) {
+      handleSaveSettings({ ...settings, autoRename: !settings.autoRename });
     }
   };
 
@@ -302,6 +309,15 @@ export default function App() {
                           onClick={toggleAutoUnzip}
                         >
                           <div className={`w-3 h-3 bg-white rounded-full transition-all ${settings.autoUnzip ? 'ml-auto' : 'bg-slate-400'}`}></div>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <label className="text-sm text-slate-400 flex-1 pr-4">Auto Renaming</label>
+                        <div
+                          className={`w-10 h-5 rounded-full flex items-center px-1 relative cursor-pointer transition-colors ${settings.autoRename ? 'bg-sky-600' : 'bg-slate-700'}`}
+                          onClick={toggleAutoRename}
+                        >
+                          <div className={`w-3 h-3 bg-white rounded-full transition-all ${settings.autoRename ? 'ml-auto' : 'bg-slate-400'}`}></div>
                         </div>
                       </div>
                       <div className="flex items-center justify-between">

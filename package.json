@@ -7,7 +7,7 @@
   "type": "module",
   "main": "dist-electron/main.cjs",
   "scripts": {
-    "dev": "vite --port=3000 --host=0.0.0.0",
+    "dev": "npm run electron:start",
     "build": "vite build && esbuild electron/main.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/main.cjs && esbuild electron/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/preload.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist dist-electron server.js release",
@@ -29,6 +29,7 @@
       "target": "nsis",
       "icon": "logo.png"
     },
+    "forceCodeSigning": false,
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,

@@ -4760,8 +4760,9 @@ function iconFileToDataUrl(icoPath) {
 
 // electron/main.ts
 var __dirname_mapped = __dirname;
+var AUTOSTART_NAME = "Sortify";
 var AUTOSTART_REG_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-var AUTOSTART_VALUE_NAME = "Sortify";
+var AUTOSTART_APPROVED_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
 var mainWindow = null;
 var tray = null;
 var watcher = null;
@@ -4769,6 +4770,7 @@ var isQuitting = false;
 var SETTINGS_FILE = import_path2.default.join(import_electron2.app.getPath("userData"), "settings.json");
 var currentSettings = {
   autoUnzip: false,
+  autoRename: true,
   autostart: true,
   launchMinimized: false,
   monitoredDirectories: [],
@@ -4782,42 +4784,86 @@ function shouldStartHidden() {
   }
   return currentSettings.launchMinimized;
 }
+function getStartupShortcutPath() {
+  return import_path2.default.join(
+    import_electron2.app.getPath("appData"),
+    "Microsoft",
+    "Windows",
+    "Start Menu",
+    "Programs",
+    "Startup",
+    `${AUTOSTART_NAME}.lnk`
+  );
+}
+function removeLegacyRunAutostart() {
+  if (process.platform !== "win32") return;
+  try {
+    import_electron2.app.setLoginItemSettings({
+      openAtLogin: false,
+      name: AUTOSTART_NAME,
+      path: process.execPath
+    });
+  } catch {
+  }
+  for (const key of [AUTOSTART_REG_KEY, AUTOSTART_APPROVED_KEY]) {
+    try {
+      (0, import_child_process2.execFileSync)("reg", ["delete", key, "/v", AUTOSTART_NAME, "/f"], {
+        stdio: "ignore",
+        windowsHide: true
+      });
+    } catch {
+    }
+  }
+}
+function removeStartupShortcut() {
+  const shortcutPath = getStartupShortcutPath();
+  try {
+    if (import_fs2.default.existsSync(shortcutPath)) {
+      import_fs2.default.unlinkSync(shortcutPath);
+    }
+  } catch (err) {
+    console.error("Failed to remove Startup shortcut:", err);
+  }
+}
 function applyAutostartSettings() {
   if (!import_electron2.app.isPackaged) return;
-  const loginArgs = currentSettings.launchMinimized ? ["--hidden"] : [];
+  if (process.platform === "win32") {
+    removeLegacyRunAutostart();
+    try {
+      if (currentSettings.autostart) {
+        const shortcutPath = getStartupShortcutPath();
+        const args = currentSettings.launchMinimized ? "--hidden" : "";
+        const workingDir = import_path2.default.dirname(process.execPath);
+        const script = [
+          `$ws = New-Object -ComObject WScript.Shell`,
+          `$s = $ws.CreateShortcut(${JSON.stringify(shortcutPath)})`,
+          `$s.TargetPath = ${JSON.stringify(process.execPath)}`,
+          `$s.Arguments = ${JSON.stringify(args)}`,
+          `$s.WorkingDirectory = ${JSON.stringify(workingDir)}`,
+          `$s.Description = ${JSON.stringify(AUTOSTART_NAME)}`,
+          `$s.Save()`
+        ].join("; ");
+        (0, import_child_process2.execFileSync)(
+          "powershell.exe",
+          ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+          { stdio: "ignore", windowsHide: true }
+        );
+      } else {
+        removeStartupShortcut();
+      }
+    } catch (err) {
+      console.error("Failed to update Windows Startup shortcut:", err);
+    }
+    return;
+  }
   try {
     import_electron2.app.setLoginItemSettings({
       openAtLogin: currentSettings.autostart,
       openAsHidden: currentSettings.launchMinimized,
-      name: AUTOSTART_VALUE_NAME,
-      path: process.execPath,
-      args: loginArgs,
-      enabled: currentSettings.autostart
+      args: currentSettings.launchMinimized ? ["--hidden"] : []
     });
   } catch (err) {
     console.error("setLoginItemSettings failed:", err);
-  }
-  if (process.platform !== "win32") return;
-  try {
-    if (currentSettings.autostart) {
-      const command = currentSettings.launchMinimized ? `"${process.execPath}" --hidden` : `"${process.execPath}"`;
-      (0, import_child_process2.execFileSync)(
-        "reg",
-        ["add", AUTOSTART_REG_KEY, "/v", AUTOSTART_VALUE_NAME, "/t", "REG_SZ", "/d", command, "/f"],
-        { stdio: "ignore", windowsHide: true }
-      );
-    } else {
-      try {
-        (0, import_child_process2.execFileSync)(
-          "reg",
-          ["delete", AUTOSTART_REG_KEY, "/v", AUTOSTART_VALUE_NAME, "/f"],
-          { stdio: "ignore", windowsHide: true }
-        );
-      } catch {
-      }
-    }
-  } catch (err) {
-    console.error("Failed to update Windows autostart registry entry:", err);
   }
 }
 function loadSettings() {
@@ -4831,7 +4877,6 @@ function loadSettings() {
         categoryIcons: { ...currentSettings.categoryIcons, ...parsed.categoryIcons || {} }
       };
     }
-    applyAutostartSettings();
   } catch (err) {
     console.error("Error loading settings:", err);
   }
@@ -4925,14 +4970,36 @@ async function processFile(filePath) {
       import_fs2.default.mkdirSync(targetDir, { recursive: true });
     }
     ensureCategoryFolderIcon(targetDir, category, currentSettings.categoryIcons);
-    const targetPath = import_path2.default.join(targetDir, filename);
-    if (filePath !== targetPath) {
-      import_fs2.default.renameSync(filePath, targetPath);
+    let targetPath = import_path2.default.join(targetDir, filename);
+    if (filePath === targetPath) return;
+    if (import_fs2.default.existsSync(targetPath)) {
+      if (!currentSettings.autoRename) {
+        sendLog(`Skipped ${filename}: already exists in ${category}`);
+        return;
+      }
+      targetPath = getUniqueTargetPath(targetDir, filename);
+    }
+    import_fs2.default.renameSync(filePath, targetPath);
+    const movedName = import_path2.default.basename(targetPath);
+    if (movedName !== filename) {
+      sendLog(`Moved ${filename} \u2192 ${category}/${movedName} (renamed)`);
+    } else {
       sendLog(`Moved ${filename} to ${category} folder`);
     }
   } catch (error) {
     sendLog(`Error processing ${filePath}: ${String(error)}`);
   }
+}
+function getUniqueTargetPath(targetDir, filename) {
+  const ext = import_path2.default.extname(filename);
+  const base = import_path2.default.basename(filename, ext);
+  let n = 1;
+  while (n < 1e4) {
+    const candidate = import_path2.default.join(targetDir, `${base} (${n})${ext}`);
+    if (!import_fs2.default.existsSync(candidate)) return candidate;
+    n++;
+  }
+  return import_path2.default.join(targetDir, `${base} (${Date.now()})${ext}`);
 }
 function setupWatcher() {
   if (watcher) {
@@ -4966,17 +5033,45 @@ function setupWatcher() {
   });
   sendLog(`Started monitoring ${currentSettings.monitoredDirectories.length} directories`);
 }
+function getAppLogoPath() {
+  return import_path2.default.join(__dirname_mapped, "../logo.png");
+}
+function getTrayIcon() {
+  const logoPath = getAppLogoPath();
+  const size = process.platform === "win32" ? 64 : 22;
+  const cachePath = import_path2.default.join(import_electron2.app.getPath("userData"), `tray-icon-${size}.png`);
+  try {
+    if (import_fs2.default.existsSync(cachePath) && import_fs2.default.existsSync(logoPath)) {
+      const cacheStat = import_fs2.default.statSync(cachePath);
+      const logoStat = import_fs2.default.statSync(logoPath);
+      if (cacheStat.mtimeMs >= logoStat.mtimeMs) {
+        const cached = import_electron2.nativeImage.createFromPath(cachePath);
+        if (!cached.isEmpty()) return cached;
+      }
+    }
+  } catch {
+  }
+  const full = import_electron2.nativeImage.createFromPath(logoPath);
+  if (full.isEmpty()) return logoPath;
+  const small = full.resize({ width: size, height: size, quality: "better" });
+  try {
+    import_fs2.default.writeFileSync(cachePath, small.toPNG());
+  } catch (err) {
+    console.error("Failed to cache tray icon:", err);
+  }
+  return small;
+}
 function createWindow() {
   mainWindow = new import_electron2.BrowserWindow({
-    width: 1180,
-    height: 820,
-    minWidth: 900,
-    minHeight: 650,
+    width: 1360,
+    height: 940,
+    minWidth: 980,
+    minHeight: 700,
     show: false,
     frame: false,
     title: "Sortify",
     autoHideMenuBar: true,
-    icon: import_path2.default.join(__dirname_mapped, "../logo.png"),
+    icon: getAppLogoPath(),
     webPreferences: {
       preload: import_path2.default.join(__dirname_mapped, "preload.cjs"),
       nodeIntegration: false,
@@ -4984,12 +5079,7 @@ function createWindow() {
     }
   });
   mainWindow.setMenu(null);
-  const isDev = process.env.NODE_ENV !== "production" && !import_electron2.app.isPackaged;
-  if (isDev) {
-    mainWindow.loadURL("http://localhost:3000");
-  } else {
-    mainWindow.loadFile(import_path2.default.join(__dirname_mapped, "../dist/index.html"));
-  }
+  mainWindow.loadFile(import_path2.default.join(__dirname_mapped, "../dist/index.html"));
   mainWindow.on("ready-to-show", () => {
     if (!shouldStartHidden()) {
       mainWindow?.show();
@@ -5003,7 +5093,7 @@ function createWindow() {
   });
 }
 function createTray() {
-  tray = new import_electron2.Tray(import_path2.default.join(__dirname_mapped, "../logo.png"));
+  tray = new import_electron2.Tray(getTrayIcon());
   const contextMenu = import_electron2.Menu.buildFromTemplate([
     { label: "Show App", click: () => mainWindow?.show() },
     { type: "separator" },
@@ -5165,6 +5255,13 @@ if (!gotTheLock) {
       console.error("Could not create tray, maybe missing icon?", e);
     }
     setupWatcher();
+    setImmediate(() => {
+      try {
+        applyAutostartSettings();
+      } catch (e) {
+        console.error("Deferred autostart failed:", e);
+      }
+    });
     import_electron2.app.on("activate", () => {
       if (import_electron2.BrowserWindow.getAllWindows().length === 0) {
         createWindow();

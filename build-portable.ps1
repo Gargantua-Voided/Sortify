@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Build an unpacked Windows app into release/win-unpacked.
+    Build a portable single-exe Windows package (no install required).
 #>
 
-Write-Host "Building Sortify Unpacked..." -ForegroundColor Cyan
+Write-Host "Building Sortify Portable..." -ForegroundColor Cyan
 
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     Write-Host "npm is not installed or not in PATH." -ForegroundColor Red
@@ -34,15 +34,15 @@ if (Test-Path "release") {
     Remove-Item -Recurse -Force "release"
 }
 
-Write-Host "Creating unpacked Electron build in 'release' folder..." -ForegroundColor Yellow
+Write-Host "Packaging portable build with Electron Builder..." -ForegroundColor Yellow
 Write-Host "Code signing disabled (unsigned local builds)." -ForegroundColor DarkGray
 $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
-npx electron-builder --win dir --x64
+npx electron-builder --win portable --x64
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Electron builder failed."
     Read-Host -Prompt "Press Enter to exit"
     exit $LASTEXITCODE
 }
 
-Write-Host "Build complete! Unpacked application is in the 'release' folder." -ForegroundColor Green
+Write-Host "Build complete! Portable exe is in the release directory." -ForegroundColor Green
 exit 0

@@ -1,8 +1,27 @@
+# Dependencies
 node_modules/
-build/
+
+# Frontend / Electron build outputs
 dist/
+dist-electron/
+build/
+.vite/
+*.tsbuildinfo
+
+# electron-builder (installer + unpacked app)
+# package.json sets directories.output = "release"
+release/
+
+# Leftover / generated
+server.js
 coverage/
-.DS_Store
-*.log
+
+# Env & secrets
 .env*
 !.env.example
+
+# Logs & OS junk
+*.log
+.DS_Store
+Thumbs.db
+Desktop.ini

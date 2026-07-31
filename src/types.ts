@@ -12,6 +12,7 @@ export type CategoryName = (typeof CATEGORIES)[number];
 
 export interface AppSettings {
   autoUnzip: boolean;
+  autoRename: boolean;
   autostart: boolean;
   launchMinimized: boolean;
   monitoredDirectories: string[];
