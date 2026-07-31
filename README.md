@@ -5,7 +5,7 @@
 
   **A sleek, automated desktop application to organize your files seamlessly.**
 
-<img width="900" height="600" alt="image" src="https://github.com/user-attachments/assets/4b54f144-b8db-4510-813c-7eb3ba9223f9" />
+<img width="1000" height="700" alt="image" src="https://github.com/user-attachments/assets/f57ce8e5-173e-44fb-b4a8-e327596366c5" />
 
 
 </div>
