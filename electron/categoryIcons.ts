@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import crypto from 'crypto';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 
 export const CATEGORIES = [
   'Images',
@@ -350,20 +350,80 @@ function notifyShellFolderUpdate(folderPath: string, icoFileName?: string): void
       '[Sortify.Shell32]::SHChangeNotify(0x08000000, 0x0000, $null, $null);', // SHCNE_ASSOCCHANGED
     ].join(' ');
 
-    execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
-      stdio: 'ignore',
-      windowsHide: true,
-      timeout: 8000,
-    });
+    // Fire-and-forget — never block the file watcher / sort loop on Explorer.
+    const child = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', ps],
+      { stdio: 'ignore', windowsHide: true, detached: true }
+    );
+    child.unref();
   } catch {
     // Non-fatal: icon still applies, Explorer may need a refresh.
   }
 }
 
-export function applyFolderIcon(folderPath: string, icoPath: string): void {
+/**
+ * Delete Windows Explorer icon cache DBs and restart Explorer so folder icons reload.
+ * Runs in a detached process so the file watcher / sort loop is never blocked.
+ * Desktop taskbar may flicker briefly — that's expected.
+ */
+export function clearExplorerIconCache(): { ok: boolean; message: string } {
+  if (process.platform !== 'win32') {
+    return { ok: false, message: 'Explorer icon cache clearing is only available on Windows' };
+  }
+
+  const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  const explorerCacheDir = path.join(localAppData, 'Microsoft', 'Windows', 'Explorer');
+  const legacyIconCache = path.join(localAppData, 'IconCache.db');
+
+  const ps = [
+    'try { Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue } catch {}',
+    'Start-Sleep -Milliseconds 600',
+    `Remove-Item -LiteralPath ${JSON.stringify(legacyIconCache)} -Force -ErrorAction SilentlyContinue`,
+    `if (Test-Path -LiteralPath ${JSON.stringify(explorerCacheDir)}) {`,
+    `  Get-ChildItem -LiteralPath ${JSON.stringify(explorerCacheDir)} -Force -ErrorAction SilentlyContinue |`,
+    `    Where-Object { $_.Name -like 'iconcache*' } |`,
+    `    Remove-Item -Force -ErrorAction SilentlyContinue`,
+    '}',
+    'Start-Process explorer',
+    'Start-Sleep -Milliseconds 800',
+    'try {',
+    '  Add-Type -Namespace Sortify -Name Shell32 -MemberDefinition @"',
+    '  [DllImport("shell32.dll")] public static extern void SHChangeNotify(int wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);',
+    '"@',
+    '  [Sortify.Shell32]::SHChangeNotify(0x08000000, 0x0000, [IntPtr]::Zero, [IntPtr]::Zero)',
+    '  & "$env:SystemRoot\\System32\\ie4uinit.exe" -show',
+    '} catch {}',
+  ].join('; ');
+
+  try {
+    const child = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ps],
+      { stdio: 'ignore', windowsHide: true, detached: true }
+    );
+    child.unref();
+    return {
+      ok: true,
+      message: 'Explorer icon cache clear started — folder icons should refresh shortly',
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      message: `Failed to clear icon cache: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+export function applyFolderIcon(
+  folderPath: string,
+  icoPath: string,
+  options?: { notify?: boolean }
+): void {
   if (process.platform !== 'win32') return;
   if (!fs.existsSync(folderPath) || !fs.existsSync(icoPath)) return;
 
+  const notify = options?.notify !== false;
   const desktopIniPath = path.join(folderPath, 'desktop.ini');
   const icoBytes = fs.readFileSync(icoPath);
   const localIcoName = folderIconFileName(icoBytes);
@@ -390,7 +450,9 @@ export function applyFolderIcon(folderPath: string, icoPath: string): void {
     execFileSync('attrib', ['+h', '+s', localIcoPath], { stdio: 'ignore', windowsHide: true });
     execFileSync('attrib', ['+h', '+s', desktopIniPath], { stdio: 'ignore', windowsHide: true });
 
-    notifyShellFolderUpdate(folderPath, localIcoName);
+    if (notify) {
+      notifyShellFolderUpdate(folderPath, localIcoName);
+    }
   } catch (err) {
     console.error(`Failed to apply folder icon to ${folderPath}:`, err);
     throw err;
@@ -440,19 +502,137 @@ export function applyCategoryIconToMonitoredDirs(
   }
 }
 
+/** True when desktop.ini already points at an existing SortifyFolder*.ico. */
+function folderHasValidSortifyIcon(folderPath: string): boolean {
+  const desktopIniPath = path.join(folderPath, 'desktop.ini');
+  if (!fs.existsSync(desktopIniPath)) return false;
+
+  try {
+    const contents = fs.readFileSync(desktopIniPath, 'utf8');
+    const match = contents.match(/IconResource\s*=\s*([^,\r\n]+)/i);
+    if (!match) return false;
+
+    const icoName = path.basename(match[1].trim());
+    if (!FOLDER_ICON_NAME_RE.test(icoName)) return false;
+
+    return fs.existsSync(path.join(folderPath, icoName));
+  } catch {
+    return false;
+  }
+}
+
 export function ensureCategoryFolderIcon(
   folderPath: string,
   category: string,
-  categoryIcons: Record<string, string>
+  categoryIcons: Record<string, string>,
+  options?: { notify?: boolean }
 ): void {
   const icoPath = categoryIcons[category];
   if (!icoPath || !fs.existsSync(icoPath)) return;
 
-  // Always (re)apply so newly created folders get the custom icon.
+  // Skip full rewrite when icon is already in place — re-applying on every file move
+  // deletes the old .ico, rewrites desktop.ini with a new nonce, and makes Explorer
+  // briefly (or longer) show the default folder icon.
+  if (folderHasValidSortifyIcon(folderPath)) {
+    try {
+      // Soft re-assert read-only so Windows keeps honoring desktop.ini.
+      execFileSync('attrib', ['+r', folderPath], { stdio: 'ignore', windowsHide: true });
+    } catch {
+      // ignore
+    }
+    return;
+  }
+
   try {
-    applyFolderIcon(folderPath, icoPath);
+    applyFolderIcon(folderPath, icoPath, options);
   } catch {
     // Non-fatal during file sorting.
+  }
+}
+
+/**
+ * Apply the right Sortify icon to a top-level folder under a monitored directory:
+ * category folders get their category icon; everything else gets DefaultIcon.
+ * No-ops when the icon is already valid.
+ */
+export function ensureTopLevelFolderIcon(
+  folderPath: string,
+  categoryIcons: Record<string, string>,
+  options?: { notify?: boolean }
+): void {
+  if (process.platform !== 'win32') return;
+  if (!fs.existsSync(folderPath)) return;
+
+  try {
+    if (!fs.statSync(folderPath).isDirectory()) return;
+  } catch {
+    return;
+  }
+
+  const name = path.basename(folderPath);
+  if (isCategoryDirectoryName(name)) {
+    ensureCategoryFolderIcon(folderPath, name, categoryIcons, options);
+    return;
+  }
+
+  if (folderHasValidSortifyIcon(folderPath)) {
+    try {
+      execFileSync('attrib', ['+r', folderPath], { stdio: 'ignore', windowsHide: true });
+    } catch {
+      // ignore
+    }
+    return;
+  }
+
+  const defaultIco = getGenericDefaultIconPath();
+  if (!defaultIco || !fs.existsSync(defaultIco)) return;
+
+  try {
+    applyFolderIcon(folderPath, defaultIco, options);
+  } catch {
+    // Non-fatal
+  }
+}
+
+/** Apply already-prepared category/.default icons onto the given monitored dirs. */
+export function applyStoredCategoryIconsToDirectories(
+  monitoredDirectories: string[],
+  categoryIcons: Record<string, string>
+): void {
+  if (monitoredDirectories.length === 0) return;
+
+  for (const category of CATEGORIES) {
+    const icoPath = categoryIcons[category];
+    if (!icoPath || !fs.existsSync(icoPath)) continue;
+    applyCategoryIconToMonitoredDirs(category, monitoredDirectories, icoPath);
+  }
+
+  const defaultIco = getGenericDefaultIconPath();
+  if (fs.existsSync(defaultIco)) {
+    applyGenericDefaultIconToTopLevelFolders(monitoredDirectories, defaultIco);
+  }
+}
+
+/**
+ * Apply already-prepared category / Default icons onto the given monitored directories.
+ * Safe with an empty list (no-op).
+ */
+export function applyStoredCustomIconsToDirectories(
+  monitoredDirectories: string[],
+  categoryIcons: Record<string, string>
+): void {
+  if (monitoredDirectories.length === 0) return;
+
+  for (const category of CATEGORIES) {
+    const icoPath = categoryIcons[category];
+    if (icoPath && fs.existsSync(icoPath)) {
+      applyCategoryIconToMonitoredDirs(category, monitoredDirectories, icoPath);
+    }
+  }
+
+  const defaultIco = getGenericDefaultIconPath();
+  if (fs.existsSync(defaultIco)) {
+    applyGenericDefaultIconToTopLevelFolders(monitoredDirectories, defaultIco);
   }
 }
 
@@ -462,6 +642,7 @@ export async function applyBundledDefaultCategoryIcons(
 ): Promise<Record<string, string>> {
   // Always start clean so OFF→ON (and custom→bundled fallback) is not blocked by
   // leftover desktop.ini / same IconResource paths from the previous cycle.
+  // With no monitored dirs this is a no-op — icons are still prepared in userData.
   clearTopLevelFolderIcons(monitoredDirectories);
 
   const iconsDir = getDefaultIconsDir();

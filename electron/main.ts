@@ -8,14 +8,16 @@ import {
   CATEGORIES,
   applyBundledDefaultCategoryIcons,
   applyCategoryIconToMonitoredDirs,
-  applyGenericDefaultIconToTopLevelFolders,
+  applyStoredCustomIconsToDirectories,
   clearAllCategoryIcons,
+  clearExplorerIconCache,
   convertSourceToCategoryIco,
   ensureCategoryFolderIcon,
+  ensureTopLevelFolderIcon,
   getCategoryIconPath,
-  getGenericDefaultIconPath,
   iconFileToDataUrl,
   isSortifyFolderMetaFile,
+  listTopLevelDirectories,
 } from './categoryIcons';
 
 // CommonJS equivalent for __dirname since we might build to CJS or ESM,
@@ -31,6 +33,7 @@ const AUTOSTART_APPROVED_KEY =
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let watcher: chokidar.FSWatcher | null = null;
+let iconReconcileTimer: ReturnType<typeof setInterval> | null = null;
 let isQuitting = false;
 
 // Settings structure
@@ -53,7 +56,7 @@ const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
 let currentSettings: AppSettings = {
   autoUnzip: false,
   autoRename: true,
-  autostart: true,
+  autostart: false,
   launchMinimized: false,
   setCustomIcons: false,
   monitoredDirectories: [],
@@ -264,17 +267,19 @@ async function processFile(filePath: string) {
       return;
     }
 
-    // Auto unzip
-    if (currentSettings.autoUnzip && (ext === '.zip')) {
+    // Auto unzip (.zip only), then fall through so the archive is still sorted into Archives
+    if (currentSettings.autoUnzip && ext === '.zip') {
       sendLog(`Unzipping ${filename}...`);
       try {
         const zip = new AdmZip(filePath);
-        const extractPath = path.join(dir, filename.replace('.zip', ''));
+        const extractPath = path.join(dir, path.basename(filename, '.zip'));
         zip.extractAllTo(extractPath, true);
         sendLog(`Successfully unzipped ${filename} to ${extractPath}`);
-        // Optionally delete the zip after extracting
-        // fs.unlinkSync(filePath);
-        return; // Don't sort the zip file if we unzipped it (or maybe sort it later)
+
+        // Watcher addDir is unreliable for extract-created folders — apply immediately.
+        if (currentSettings.setCustomIcons && fs.existsSync(extractPath)) {
+          ensureTopLevelFolderIcon(extractPath, currentSettings.categoryIcons, { notify: false });
+        }
       } catch (e) {
         sendLog(`Error unzipping ${filename}: ${String(e)}`);
       }
@@ -289,7 +294,7 @@ async function processFile(filePath: string) {
       fs.mkdirSync(targetDir, { recursive: true });
     }
 
-    // Apply custom category icon (new folders, and re-assert on existing ones)
+    // Apply custom category icon only when missing (avoid rewriting on every move)
     if (currentSettings.setCustomIcons) {
       ensureCategoryFolderIcon(targetDir, category, currentSettings.categoryIcons);
     }
@@ -335,26 +340,56 @@ function getUniqueTargetPath(targetDir: string, filename: string): string {
   return path.join(targetDir, `${base} (${Date.now()})${ext}`);
 }
 
+function normalizeDirPath(dirPath: string): string {
+  return path.normalize(dirPath).replace(/[/\\]+$/, '').toLowerCase();
+}
+
+function isMonitoredDirectory(dirPath: string): boolean {
+  const norm = normalizeDirPath(dirPath);
+  return currentSettings.monitoredDirectories.some((d) => normalizeDirPath(d) === norm);
+}
+
+/** Apply missing custom icons to top-level folders (New Folder, unzip leftovers, etc.). */
+function reconcileTopLevelFolderIcons() {
+  if (!currentSettings.setCustomIcons) return;
+  if (Object.keys(currentSettings.categoryIcons).length === 0) return;
+
+  for (const monitored of currentSettings.monitoredDirectories) {
+    for (const folderPath of listTopLevelDirectories(monitored)) {
+      try {
+        // Skip Explorer notifies during batch reconcile — they starved the sort watcher.
+        ensureTopLevelFolderIcon(folderPath, currentSettings.categoryIcons, { notify: false });
+      } catch {
+        // Non-fatal per folder
+      }
+    }
+  }
+}
+
 function setupWatcher() {
   if (watcher) {
     watcher.close();
+    watcher = null;
   }
-  
+  if (iconReconcileTimer) {
+    clearInterval(iconReconcileTimer);
+    iconReconcileTimer = null;
+  }
+
   if (currentSettings.monitoredDirectories.length === 0) return;
 
   watcher = chokidar.watch(currentSettings.monitoredDirectories, {
     ignored: (filePath: string) => {
-      // ignore Sortify folder icon metadata
       if (isSortifyFolderMetaFile(filePath)) return true;
-      // ignore dotfiles
       if (/(^|[\/\\])\../.test(filePath)) return true;
-      // ignore by extension
       const ext = path.extname(filePath).toLowerCase();
-      if (currentSettings.ignoredFileTypes.includes(ext)) return true;
+      if (ext && currentSettings.ignoredFileTypes.includes(ext)) return true;
       return false;
     },
     persistent: true,
-    depth: 0, // only monitor the root of the directory, not subdirectories recursively
+    depth: 0,
+    // false = scan existing files on start / when watcher is rebuilt (sorting)
+    ignoreInitial: false,
     usePolling: true,
     interval: currentSettings.scanInterval * 1000,
     awaitWriteFinish: {
@@ -364,13 +399,24 @@ function setupWatcher() {
   });
 
   watcher.on('add', (filePath) => {
-    // Only process files in the direct monitored directories to avoid loops
     const dir = path.dirname(filePath);
-    if (currentSettings.monitoredDirectories.includes(dir)) {
+    if (isMonitoredDirectory(dir)) {
       sendLog(`Detected new file: ${filePath}`);
       processFile(filePath);
     }
   });
+
+  watcher.on('addDir', (dirPath) => {
+    if (!currentSettings.setCustomIcons) return;
+    if (!isMonitoredDirectory(path.dirname(dirPath))) return;
+    if (isMonitoredDirectory(dirPath)) return;
+
+    ensureTopLevelFolderIcon(dirPath, currentSettings.categoryIcons, { notify: false });
+  });
+
+  const reconcileMs = Math.max(5000, currentSettings.scanInterval * 1000);
+  iconReconcileTimer = setInterval(() => reconcileTopLevelFolderIcons(), reconcileMs);
+  setTimeout(() => reconcileTopLevelFolderIcons(), 2500);
 
   sendLog(`Started monitoring ${currentSettings.monitoredDirectories.length} directories`);
 }
@@ -473,42 +519,44 @@ ipcMain.handle('get-settings', () => {
   return currentSettings;
 });
 
-ipcMain.handle('save-settings', (event, newSettings: Partial<AppSettings>) => {
+ipcMain.handle('save-settings', async (_event, newSettings: Partial<AppSettings>) => {
   const previousDirs = [...currentSettings.monitoredDirectories];
-  // setCustomIcons is owned by set-custom-icons-enabled (applies/clears icons).
-  const { setCustomIcons: _ignored, ...rest } = newSettings;
+  // setCustomIcons + categoryIcons are owned by the icon IPC handlers — don't let
+  // a stale renderer payload wipe prepared icons (common when enabling before any dirs).
+  const { setCustomIcons: _ignoredFlag, categoryIcons: _ignoredIcons, ...rest } = newSettings;
   currentSettings = {
     ...currentSettings,
     ...rest,
     setCustomIcons: currentSettings.setCustomIcons,
-    categoryIcons: newSettings.categoryIcons ?? currentSettings.categoryIcons,
+    categoryIcons: currentSettings.categoryIcons,
   };
   saveSettings();
   setupWatcher();
 
-  // When monitored dirs change, apply any custom icons to existing category folders
-  const dirsChanged =
-    previousDirs.length !== currentSettings.monitoredDirectories.length ||
-    previousDirs.some((d, i) => d !== currentSettings.monitoredDirectories[i]);
+  const previousNorm = new Set(previousDirs.map(normalizeDirPath));
+  const addedDirs = currentSettings.monitoredDirectories.filter(
+    (d) => !previousNorm.has(normalizeDirPath(d))
+  );
 
-  if (dirsChanged && currentSettings.setCustomIcons) {
-    for (const category of CATEGORIES) {
-      const icoPath = currentSettings.categoryIcons[category];
-      if (icoPath) {
-        applyCategoryIconToMonitoredDirs(
-          category,
-          currentSettings.monitoredDirectories,
-          icoPath
-        );
+  // Whenever new monitored directories are added (now or later), apply custom icons.
+  if (addedDirs.length > 0 && currentSettings.setCustomIcons) {
+    try {
+      if (Object.keys(currentSettings.categoryIcons).length === 0) {
+        currentSettings.categoryIcons = await applyBundledDefaultCategoryIcons([]);
+        saveSettings();
       }
-    }
 
-    const defaultIco = getGenericDefaultIconPath();
-    if (fs.existsSync(defaultIco)) {
-      applyGenericDefaultIconToTopLevelFolders(
-        currentSettings.monitoredDirectories,
-        defaultIco
+      applyStoredCustomIconsToDirectories(addedDirs, currentSettings.categoryIcons);
+      sendLog(
+        `Applied custom icons to ${addedDirs.length} newly added monitored director${
+          addedDirs.length === 1 ? 'y' : 'ies'
+        }`
       );
+
+      const cacheResult = clearExplorerIconCache();
+      sendLog(cacheResult.ok ? cacheResult.message : `Error: ${cacheResult.message}`);
+    } catch (err) {
+      sendLog(`Error applying custom icons to new directories: ${String(err)}`);
     }
   }
 
@@ -538,15 +586,28 @@ ipcMain.handle('set-custom-icons-enabled', async (_event, enabled: boolean) => {
       );
       currentSettings.categoryIcons = {};
 
+      // Always prepare .ico files in userData — even with zero monitored dirs —
+      // so later "Add Directory" can apply them immediately.
       const icons = await applyBundledDefaultCategoryIcons(
         currentSettings.monitoredDirectories
       );
       currentSettings.setCustomIcons = true;
       currentSettings.categoryIcons = icons;
       saveSettings();
-      sendLog(
-        'Custom icons enabled — applied category icons and DefaultIcon to existing top-level folders'
-      );
+
+      const dirCount = currentSettings.monitoredDirectories.length;
+      if (dirCount === 0) {
+        sendLog(
+          'Custom icons enabled — defaults prepared; will apply when you add a monitored directory'
+        );
+      } else {
+        sendLog(
+          'Custom icons enabled — applied category icons and DefaultIcon to existing top-level folders'
+        );
+        // Explorer often keeps stale folder bitmaps until the icon cache is wiped.
+        const cacheResult = clearExplorerIconCache();
+        sendLog(cacheResult.ok ? cacheResult.message : `Error: ${cacheResult.message}`);
+      }
     } catch (err) {
       // Roll back so UI/main stay in sync and a later toggle can retry.
       currentSettings.setCustomIcons = false;
@@ -688,6 +749,16 @@ ipcMain.handle('clear-category-icon', (_event, category: string) => {
 });
 
 ipcMain.handle('get-category-icon-previews', () => getCategoryIconPreviews());
+
+ipcMain.handle('clear-explorer-icon-cache', () => {
+  const result = clearExplorerIconCache();
+  if (result.ok) {
+    sendLog(result.message);
+  } else {
+    sendLog(`Error: ${result.message}`);
+  }
+  return result;
+});
 
 // App Lifecycle
 const gotTheLock = app.requestSingleInstanceLock();

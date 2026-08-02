@@ -52,6 +52,7 @@ declare global {
         enabled: boolean
       ) => Promise<{ settings: AppSettings; previews: Record<string, string | null> }>;
       getCategoryIconPreviews: () => Promise<Record<string, string | null>>;
+      clearExplorerIconCache: () => Promise<{ ok: boolean; message: string }>;
       onLogMessage: (callback: (data: LogMessage) => void) => void;
       removeLogListener: () => void;
       windowControl?: (action: 'minimize' | 'maximize' | 'close') => void;

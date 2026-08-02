@@ -10,6 +10,7 @@ import_electron.contextBridge.exposeInMainWorld("electronAPI", {
   clearCategoryIcon: (category) => import_electron.ipcRenderer.invoke("clear-category-icon", category),
   setCustomIconsEnabled: (enabled) => import_electron.ipcRenderer.invoke("set-custom-icons-enabled", enabled),
   getCategoryIconPreviews: () => import_electron.ipcRenderer.invoke("get-category-icon-previews"),
+  clearExplorerIconCache: () => import_electron.ipcRenderer.invoke("clear-explorer-icon-cache"),
   onLogMessage: (callback) => {
     import_electron.ipcRenderer.on("log-message", (_event, data) => callback(data));
   },

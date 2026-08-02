@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Settings as SettingsIcon, ScrollText, FolderPlus, Trash2, Folder, ImagePlus, Link2, X, Palette } from 'lucide-react';
+import { Settings as SettingsIcon, ScrollText, FolderPlus, Trash2, Folder, ImagePlus, Link2, X, Palette, RefreshCw } from 'lucide-react';
 import { AppSettings, CATEGORIES, LogMessage } from './types';
 import logoSrc from '../logo.png';
 
@@ -29,6 +29,7 @@ export default function App() {
       previews: {},
     }),
     getCategoryIconPreviews: async () => ({}),
+    clearExplorerIconCache: async () => ({ ok: false, message: 'Not available' }),
     onLogMessage: () => {},
     removeLogListener: () => {}
   };
@@ -42,6 +43,8 @@ export default function App() {
   const [iconBusy, setIconBusy] = useState<string | null>(null);
   const [iconError, setIconError] = useState<string | null>(null);
   const [customIconsBusy, setCustomIconsBusy] = useState(false);
+  const [cacheBusy, setCacheBusy] = useState(false);
+  const [cacheStatus, setCacheStatus] = useState<string | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -245,6 +248,20 @@ export default function App() {
     }
   };
 
+  const handleClearExplorerIconCache = async () => {
+    if (!api.clearExplorerIconCache || cacheBusy) return;
+    setCacheBusy(true);
+    setCacheStatus(null);
+    try {
+      const result = await api.clearExplorerIconCache();
+      setCacheStatus(result.message);
+    } catch (err) {
+      setCacheStatus(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCacheBusy(false);
+    }
+  };
+
   if (!settings) {
     return (
       <div className="flex h-screen w-full items-center justify-center bg-[#0a0c10] text-slate-400 font-sans">
@@ -339,8 +356,29 @@ export default function App() {
           {activeTab === 'settings' && (
             <>
               <div className="shrink-0 mb-2">
-                <h2 className="text-2xl font-bold tracking-tight text-white">Application Settings</h2>
-                <p className="text-slate-400 mt-1 text-sm">Configure how files are sorted and managed on your system.</p>
+                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                  <div className="min-w-0">
+                    <h2 className="text-2xl font-bold tracking-tight text-white">Application Settings</h2>
+                    <p className="text-slate-400 mt-1 text-sm">Configure how files are sorted and managed on your system.</p>
+                  </div>
+                  <button
+                    onClick={handleClearExplorerIconCache}
+                    disabled={cacheBusy}
+                    title="Delete Windows Explorer icon cache and restart Explorer"
+                    className="shrink-0 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded border border-slate-700 transition-colors disabled:opacity-50 flex items-center gap-2 self-start"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${cacheBusy ? 'animate-spin' : ''}`} />
+                    {cacheBusy ? 'Clearing…' : 'Clear Explorer Icon Cache'}
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-2">
+                  If folder icons stick on the Windows default, clear the Explorer icon cache. The desktop may flicker briefly while Explorer restarts.
+                </p>
+                {cacheStatus && (
+                  <p className={`text-sm mt-2 ${cacheStatus.toLowerCase().includes('fail') ? 'text-red-400' : 'text-emerald-400'}`}>
+                    {cacheStatus}
+                  </p>
+                )}
               </div>
 
               <div className="flex flex-col md:flex-row gap-6 flex-1 min-h-[320px]">

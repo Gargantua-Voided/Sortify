@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clearCategoryIcon: (category: string) => ipcRenderer.invoke('clear-category-icon', category),
   setCustomIconsEnabled: (enabled: boolean) => ipcRenderer.invoke('set-custom-icons-enabled', enabled),
   getCategoryIconPreviews: () => ipcRenderer.invoke('get-category-icon-previews'),
+  clearExplorerIconCache: () => ipcRenderer.invoke('clear-explorer-icon-cache'),
   onLogMessage: (callback: (data: {timestamp: string, message: string}) => void) => {
     ipcRenderer.on('log-message', (_event, data) => callback(data));
   },
