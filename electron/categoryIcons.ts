@@ -22,7 +22,7 @@ export type CategoryName = (typeof CATEGORIES)[number];
  * so Explorer does not keep serving a stale bitmap for the same IconResource path.
  */
 export const FOLDER_ICON_FILENAME = 'SortifyFolder.ico';
-const FOLDER_ICON_NAME_RE = /^sortifyfolder(-[a-f0-9]+)?\.ico$/i;
+const FOLDER_ICON_NAME_RE = /^sortifyfolder([-.a-z0-9]*)\.ico$/i;
 
 const ICON_SIZES = [16, 32, 48, 256] as const;
 
@@ -88,7 +88,10 @@ export function isSortifyFolderMetaFile(filePath: string): boolean {
 
 function folderIconFileName(icoBytes: Buffer): string {
   const hash = crypto.createHash('sha1').update(icoBytes).digest('hex').slice(0, 10);
-  return `SortifyFolder-${hash}.ico`;
+  // Per-apply nonce so OFF→ON with the same bundled bytes still gets a new IconResource
+  // path — Explorer caches by path and will keep the first bitmap otherwise.
+  const nonce = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  return `SortifyFolder-${hash}-${nonce}.ico`;
 }
 
 function listLocalFolderIconFiles(folderPath: string): string[] {
@@ -457,6 +460,10 @@ export function ensureCategoryFolderIcon(
 export async function applyBundledDefaultCategoryIcons(
   monitoredDirectories: string[]
 ): Promise<Record<string, string>> {
+  // Always start clean so OFF→ON (and custom→bundled fallback) is not blocked by
+  // leftover desktop.ini / same IconResource paths from the previous cycle.
+  clearTopLevelFolderIcons(monitoredDirectories);
+
   const iconsDir = getDefaultIconsDir();
   const result: Record<string, string> = {};
 
@@ -468,6 +475,7 @@ export async function applyBundledDefaultCategoryIcons(
       continue;
     }
 
+    // Always rebuild from bundled assets (never reuse a prior user upload left in userData).
     const icoPath = await convertSourceToCategoryIco(category, {
       type: 'file',
       value: sourcePath,

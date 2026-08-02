@@ -4500,7 +4500,7 @@ var CATEGORIES = [
   "Executables",
   "Others"
 ];
-var FOLDER_ICON_NAME_RE = /^sortifyfolder(-[a-f0-9]+)?\.ico$/i;
+var FOLDER_ICON_NAME_RE = /^sortifyfolder([-.a-z0-9]*)\.ico$/i;
 var ICON_SIZES = [16, 32, 48, 256];
 function getCategoryIconsDir() {
   const dir = import_path.default.join(import_electron.app.getPath("userData"), "category-icons");
@@ -4548,7 +4548,8 @@ function isSortifyFolderMetaFile(filePath) {
 }
 function folderIconFileName(icoBytes) {
   const hash = import_crypto.default.createHash("sha1").update(icoBytes).digest("hex").slice(0, 10);
-  return `SortifyFolder-${hash}.ico`;
+  const nonce = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  return `SortifyFolder-${hash}-${nonce}.ico`;
 }
 function listLocalFolderIconFiles(folderPath) {
   try {
@@ -4824,6 +4825,7 @@ function ensureCategoryFolderIcon(folderPath, category, categoryIcons) {
   }
 }
 async function applyBundledDefaultCategoryIcons(monitoredDirectories) {
+  clearTopLevelFolderIcons(monitoredDirectories);
   const iconsDir = getDefaultIconsDir();
   const result = {};
   for (const category of CATEGORIES) {
@@ -5312,23 +5314,42 @@ import_electron2.ipcMain.handle("save-settings", (event, newSettings) => {
 });
 import_electron2.ipcMain.handle("set-custom-icons-enabled", async (_event, enabled) => {
   const next = Boolean(enabled);
-  if (next === currentSettings.setCustomIcons) {
+  const iconsMissing = next && currentSettings.setCustomIcons && Object.keys(currentSettings.categoryIcons).length === 0;
+  if (next === currentSettings.setCustomIcons && !iconsMissing) {
     return { settings: currentSettings, previews: getCategoryIconPreviews() };
   }
-  currentSettings.setCustomIcons = next;
   if (next) {
-    currentSettings.categoryIcons = await applyBundledDefaultCategoryIcons(
-      currentSettings.monitoredDirectories
-    );
-    saveSettings();
-    sendLog(
-      "Custom icons enabled \u2014 applied category icons and DefaultIcon to existing top-level folders"
-    );
+    try {
+      clearAllCategoryIcons(
+        currentSettings.monitoredDirectories,
+        currentSettings.categoryIcons
+      );
+      currentSettings.categoryIcons = {};
+      const icons = await applyBundledDefaultCategoryIcons(
+        currentSettings.monitoredDirectories
+      );
+      currentSettings.setCustomIcons = true;
+      currentSettings.categoryIcons = icons;
+      saveSettings();
+      sendLog(
+        "Custom icons enabled \u2014 applied category icons and DefaultIcon to existing top-level folders"
+      );
+    } catch (err) {
+      currentSettings.setCustomIcons = false;
+      currentSettings.categoryIcons = {};
+      try {
+        clearAllCategoryIcons(currentSettings.monitoredDirectories, {});
+      } catch {
+      }
+      saveSettings();
+      throw err;
+    }
   } else {
     clearAllCategoryIcons(
       currentSettings.monitoredDirectories,
       currentSettings.categoryIcons
     );
+    currentSettings.setCustomIcons = false;
     currentSettings.categoryIcons = {};
     saveSettings();
     sendLog("Custom icons disabled \u2014 restored Windows default folder icons");

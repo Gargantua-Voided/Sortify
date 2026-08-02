@@ -108,6 +108,17 @@ export default function App() {
       }
     } catch (err) {
       setIconError(err instanceof Error ? err.message : String(err));
+      // Resync — main may have rolled back after a failed apply.
+      try {
+        const [synced, previews] = await Promise.all([
+          api.getSettings(),
+          api.getCategoryIconPreviews(),
+        ]);
+        setSettings(synced);
+        setIconPreviews(previews);
+      } catch {
+        // ignore
+      }
     } finally {
       setCustomIconsBusy(false);
     }

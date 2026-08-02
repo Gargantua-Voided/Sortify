@@ -517,25 +517,54 @@ ipcMain.handle('save-settings', (event, newSettings: Partial<AppSettings>) => {
 
 ipcMain.handle('set-custom-icons-enabled', async (_event, enabled: boolean) => {
   const next = Boolean(enabled);
-  if (next === currentSettings.setCustomIcons) {
+  const iconsMissing =
+    next &&
+    currentSettings.setCustomIcons &&
+    Object.keys(currentSettings.categoryIcons).length === 0;
+
+  // Skip only when state already matches AND (if enabling) icons are actually present.
+  // A failed prior enable can leave setCustomIcons=true with empty categoryIcons; that
+  // must not early-return or bundled defaults never get applied again.
+  if (next === currentSettings.setCustomIcons && !iconsMissing) {
     return { settings: currentSettings, previews: getCategoryIconPreviews() };
   }
 
-  currentSettings.setCustomIcons = next;
-
   if (next) {
-    currentSettings.categoryIcons = await applyBundledDefaultCategoryIcons(
-      currentSettings.monitoredDirectories
-    );
-    saveSettings();
-    sendLog(
-      'Custom icons enabled — applied category icons and DefaultIcon to existing top-level folders'
-    );
+    try {
+      // Wipe any leftover user uploads / stale caches before restoring bundled defaults.
+      clearAllCategoryIcons(
+        currentSettings.monitoredDirectories,
+        currentSettings.categoryIcons
+      );
+      currentSettings.categoryIcons = {};
+
+      const icons = await applyBundledDefaultCategoryIcons(
+        currentSettings.monitoredDirectories
+      );
+      currentSettings.setCustomIcons = true;
+      currentSettings.categoryIcons = icons;
+      saveSettings();
+      sendLog(
+        'Custom icons enabled — applied category icons and DefaultIcon to existing top-level folders'
+      );
+    } catch (err) {
+      // Roll back so UI/main stay in sync and a later toggle can retry.
+      currentSettings.setCustomIcons = false;
+      currentSettings.categoryIcons = {};
+      try {
+        clearAllCategoryIcons(currentSettings.monitoredDirectories, {});
+      } catch {
+        // ignore
+      }
+      saveSettings();
+      throw err;
+    }
   } else {
     clearAllCategoryIcons(
       currentSettings.monitoredDirectories,
       currentSettings.categoryIcons
     );
+    currentSettings.setCustomIcons = false;
     currentSettings.categoryIcons = {};
     saveSettings();
     sendLog('Custom icons disabled — restored Windows default folder icons');
