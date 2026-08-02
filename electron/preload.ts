@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setCategoryIcon: (payload: { category: string; sourceType: 'file' | 'url'; value: string }) =>
     ipcRenderer.invoke('set-category-icon', payload),
   clearCategoryIcon: (category: string) => ipcRenderer.invoke('clear-category-icon', category),
+  setCustomIconsEnabled: (enabled: boolean) => ipcRenderer.invoke('set-custom-icons-enabled', enabled),
   getCategoryIconPreviews: () => ipcRenderer.invoke('get-category-icon-previews'),
   onLogMessage: (callback: (data: {timestamp: string, message: string}) => void) => {
     ipcRenderer.on('log-message', (_event, data) => callback(data));

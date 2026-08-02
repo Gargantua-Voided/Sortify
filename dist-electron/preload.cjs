@@ -8,6 +8,7 @@ import_electron.contextBridge.exposeInMainWorld("electronAPI", {
   getCategories: () => import_electron.ipcRenderer.invoke("get-categories"),
   setCategoryIcon: (payload) => import_electron.ipcRenderer.invoke("set-category-icon", payload),
   clearCategoryIcon: (category) => import_electron.ipcRenderer.invoke("clear-category-icon", category),
+  setCustomIconsEnabled: (enabled) => import_electron.ipcRenderer.invoke("set-custom-icons-enabled", enabled),
   getCategoryIconPreviews: () => import_electron.ipcRenderer.invoke("get-category-icon-previews"),
   onLogMessage: (callback) => {
     import_electron.ipcRenderer.on("log-message", (_event, data) => callback(data));

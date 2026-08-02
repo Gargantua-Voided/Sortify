@@ -4489,6 +4489,7 @@ var import_electron = require("electron");
 var import_path = __toESM(require("path"), 1);
 var import_fs = __toESM(require("fs"), 1);
 var import_os = __toESM(require("os"), 1);
+var import_crypto = __toESM(require("crypto"), 1);
 var import_child_process = require("child_process");
 var CATEGORIES = [
   "Images",
@@ -4499,7 +4500,7 @@ var CATEGORIES = [
   "Executables",
   "Others"
 ];
-var FOLDER_ICON_FILENAME = "SortifyFolder.ico";
+var FOLDER_ICON_NAME_RE = /^sortifyfolder(-[a-f0-9]+)?\.ico$/i;
 var ICON_SIZES = [16, 32, 48, 256];
 function getCategoryIconsDir() {
   const dir = import_path.default.join(import_electron.app.getPath("userData"), "category-icons");
@@ -4511,9 +4512,62 @@ function getCategoryIconsDir() {
 function getCategoryIconPath(category) {
   return import_path.default.join(getCategoryIconsDir(), `${category}.ico`);
 }
+var DEFAULT_CATEGORY_ICON_FILES = {
+  Images: "ImageIcon.png",
+  Videos: "MediaIcon.png",
+  Audio: "MusicIcon.png",
+  Documents: "DocumentIcon.png",
+  Archives: "ArchiveIcon.png",
+  Executables: "AppIcon.png",
+  Others: "OtherIcon.png"
+};
+var DEFAULT_FOLDER_ICON_FILE = "DefaultIcon.png";
+function getDefaultIconsDir() {
+  if (import_electron.app.isPackaged) {
+    return import_path.default.join(process.resourcesPath, "default_icons");
+  }
+  return import_path.default.join(import_electron.app.getAppPath(), "default_icons");
+}
+function getGenericDefaultIconPath() {
+  return import_path.default.join(getCategoryIconsDir(), "Default.ico");
+}
+function isCategoryDirectoryName(name) {
+  return CATEGORIES.includes(name);
+}
+function listTopLevelDirectories(parentPath) {
+  if (!import_fs.default.existsSync(parentPath)) return [];
+  try {
+    return import_fs.default.readdirSync(parentPath, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => import_path.default.join(parentPath, entry.name));
+  } catch {
+    return [];
+  }
+}
 function isSortifyFolderMetaFile(filePath) {
-  const name = import_path.default.basename(filePath).toLowerCase();
-  return name === "desktop.ini" || name === FOLDER_ICON_FILENAME.toLowerCase();
+  const name = import_path.default.basename(filePath);
+  return name.toLowerCase() === "desktop.ini" || FOLDER_ICON_NAME_RE.test(name);
+}
+function folderIconFileName(icoBytes) {
+  const hash = import_crypto.default.createHash("sha1").update(icoBytes).digest("hex").slice(0, 10);
+  return `SortifyFolder-${hash}.ico`;
+}
+function listLocalFolderIconFiles(folderPath) {
+  try {
+    return import_fs.default.readdirSync(folderPath).filter((name) => FOLDER_ICON_NAME_RE.test(name)).map((name) => import_path.default.join(folderPath, name));
+  } catch {
+    return [];
+  }
+}
+function removeLocalFolderIconFiles(folderPath, keepName) {
+  for (const filePath of listLocalFolderIconFiles(folderPath)) {
+    if (keepName && import_path.default.basename(filePath).toLowerCase() === keepName.toLowerCase()) {
+      continue;
+    }
+    clearFileAttribs(filePath);
+    try {
+      import_fs.default.unlinkSync(filePath);
+    } catch {
+    }
+  }
 }
 function pngBuffersToIco(pngBuffers) {
   const count = pngBuffers.length;
@@ -4623,7 +4677,9 @@ async function convertSourceToCategoryIco(category, source) {
   if (!CATEGORIES.includes(category)) {
     throw new Error(`Unknown category: ${category}`);
   }
-  const dest = getCategoryIconPath(category);
+  return writeSourceToIcoFile(getCategoryIconPath(category), source);
+}
+async function writeSourceToIcoFile(dest, source) {
   let stagedTemp = null;
   try {
     if (source.type === "file") {
@@ -4652,20 +4708,45 @@ async function convertSourceToCategoryIco(category, source) {
     }
   }
 }
+async function ensureBundledGenericDefaultIco() {
+  const sourcePath = import_path.default.join(getDefaultIconsDir(), DEFAULT_FOLDER_ICON_FILE);
+  if (!import_fs.default.existsSync(sourcePath)) {
+    console.warn(`Missing bundled default folder icon: ${sourcePath}`);
+    return null;
+  }
+  return writeSourceToIcoFile(getGenericDefaultIconPath(), {
+    type: "file",
+    value: sourcePath
+  });
+}
 function clearFileAttribs(filePath) {
   try {
     (0, import_child_process.execFileSync)("attrib", ["-h", "-s", "-r", filePath], { stdio: "ignore", windowsHide: true });
   } catch {
   }
 }
-function notifyShellFolderUpdate(folderPath) {
+function notifyShellFolderUpdate(folderPath, icoFileName) {
   try {
+    const escapedFolder = folderPath.replace(/'/g, "''");
+    const parentPath = import_path.default.dirname(folderPath);
+    const escapedParent = parentPath.replace(/'/g, "''");
+    const localIco = icoFileName ? import_path.default.join(folderPath, icoFileName).replace(/'/g, "''") : "";
     const ps = [
       'Add-Type -Namespace Sortify -Name Shell32 -MemberDefinition @"',
       '[DllImport("shell32.dll", CharSet=CharSet.Unicode)] public static extern void SHChangeNotify(int wEventId, uint uFlags, string dwItem1, string dwItem2);',
+      '[DllImport("shell32.dll", CharSet=CharSet.Unicode)] public static extern void SHUpdateImageW(string pszHashItem, int iIndex, uint uFlags, int iImageIndex);',
       '"@;',
-      `[Sortify.Shell32]::SHChangeNotify(0x1000, 0x0005, '${folderPath.replace(/'/g, "''")}', $null);`,
+      // SHCNF_PATHW | SHCNF_FLUSHNOWAIT = 0x2005
+      `[Sortify.Shell32]::SHChangeNotify(0x2000, 0x2005, '${escapedFolder}', $null);`,
+      // SHCNE_UPDATEITEM
+      `[Sortify.Shell32]::SHChangeNotify(0x1000, 0x2005, '${escapedFolder}', $null);`,
+      // SHCNE_UPDATEDIR
+      `[Sortify.Shell32]::SHChangeNotify(0x1000, 0x2005, '${escapedParent}', $null);`,
+      // parent view
+      `[Sortify.Shell32]::SHChangeNotify(0x2000, 0x2005, '${escapedParent}', $null);`,
+      icoFileName ? `[Sortify.Shell32]::SHUpdateImageW('${localIco}', 0, 0, 0); [Sortify.Shell32]::SHChangeNotify(0x8000, 0x2005, '${localIco}', $null);` : "",
       "[Sortify.Shell32]::SHChangeNotify(0x08000000, 0x0000, $null, $null);"
+      // SHCNE_ASSOCCHANGED
     ].join(" ");
     (0, import_child_process.execFileSync)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", ps], {
       stdio: "ignore",
@@ -4679,21 +4760,24 @@ function applyFolderIcon(folderPath, icoPath) {
   if (process.platform !== "win32") return;
   if (!import_fs.default.existsSync(folderPath) || !import_fs.default.existsSync(icoPath)) return;
   const desktopIniPath = import_path.default.join(folderPath, "desktop.ini");
-  const localIcoPath = import_path.default.join(folderPath, FOLDER_ICON_FILENAME);
+  const icoBytes = import_fs.default.readFileSync(icoPath);
+  const localIcoName = folderIconFileName(icoBytes);
+  const localIcoPath = import_path.default.join(folderPath, localIcoName);
   const contents = `[.ShellClassInfo]\r
-IconResource=${FOLDER_ICON_FILENAME},0\r
-IconFile=${FOLDER_ICON_FILENAME}\r
+IconResource=${localIcoName},0\r
+IconFile=${localIcoName}\r
 IconIndex=0\r
 `;
   try {
     clearFileAttribs(desktopIniPath);
     clearFileAttribs(localIcoPath);
-    import_fs.default.writeFileSync(localIcoPath, import_fs.default.readFileSync(icoPath));
+    removeLocalFolderIconFiles(folderPath, localIcoName);
+    import_fs.default.writeFileSync(localIcoPath, icoBytes);
     import_fs.default.writeFileSync(desktopIniPath, contents, "utf8");
     (0, import_child_process.execFileSync)("attrib", ["+r", folderPath], { stdio: "ignore", windowsHide: true });
     (0, import_child_process.execFileSync)("attrib", ["+h", "+s", localIcoPath], { stdio: "ignore", windowsHide: true });
     (0, import_child_process.execFileSync)("attrib", ["+h", "+s", desktopIniPath], { stdio: "ignore", windowsHide: true });
-    notifyShellFolderUpdate(folderPath);
+    notifyShellFolderUpdate(folderPath, localIcoName);
   } catch (err) {
     console.error(`Failed to apply folder icon to ${folderPath}:`, err);
     throw err;
@@ -4702,16 +4786,15 @@ IconIndex=0\r
 function clearFolderIcon(folderPath) {
   if (process.platform !== "win32") return;
   const desktopIniPath = import_path.default.join(folderPath, "desktop.ini");
-  const localIcoPath = import_path.default.join(folderPath, FOLDER_ICON_FILENAME);
   try {
-    for (const filePath of [desktopIniPath, localIcoPath]) {
-      if (!import_fs.default.existsSync(filePath)) continue;
-      clearFileAttribs(filePath);
+    if (import_fs.default.existsSync(desktopIniPath)) {
+      clearFileAttribs(desktopIniPath);
       try {
-        import_fs.default.unlinkSync(filePath);
+        import_fs.default.unlinkSync(desktopIniPath);
       } catch {
       }
     }
+    removeLocalFolderIconFiles(folderPath);
     try {
       (0, import_child_process.execFileSync)("attrib", ["-r", folderPath], { stdio: "ignore", windowsHide: true });
     } catch {
@@ -4738,6 +4821,75 @@ function ensureCategoryFolderIcon(folderPath, category, categoryIcons) {
   try {
     applyFolderIcon(folderPath, icoPath);
   } catch {
+  }
+}
+async function applyBundledDefaultCategoryIcons(monitoredDirectories) {
+  const iconsDir = getDefaultIconsDir();
+  const result = {};
+  for (const category of CATEGORIES) {
+    const fileName = DEFAULT_CATEGORY_ICON_FILES[category];
+    const sourcePath = import_path.default.join(iconsDir, fileName);
+    if (!import_fs.default.existsSync(sourcePath)) {
+      console.warn(`Missing bundled default icon: ${sourcePath}`);
+      continue;
+    }
+    const icoPath = await convertSourceToCategoryIco(category, {
+      type: "file",
+      value: sourcePath
+    });
+    applyCategoryIconToMonitoredDirs(category, monitoredDirectories, icoPath);
+    result[category] = icoPath;
+  }
+  const defaultIco = await ensureBundledGenericDefaultIco();
+  if (defaultIco) {
+    applyGenericDefaultIconToTopLevelFolders(monitoredDirectories, defaultIco);
+  }
+  return result;
+}
+function applyGenericDefaultIconToTopLevelFolders(monitoredDirectories, icoPath) {
+  if (!icoPath || !import_fs.default.existsSync(icoPath)) return;
+  for (const monitored of monitoredDirectories) {
+    for (const folderPath of listTopLevelDirectories(monitored)) {
+      if (isCategoryDirectoryName(import_path.default.basename(folderPath))) continue;
+      try {
+        applyFolderIcon(folderPath, icoPath);
+      } catch (err) {
+        console.error(`Failed to apply default icon to ${folderPath}:`, err);
+      }
+    }
+  }
+}
+function clearTopLevelFolderIcons(monitoredDirectories) {
+  for (const monitored of monitoredDirectories) {
+    for (const folderPath of listTopLevelDirectories(monitored)) {
+      clearFolderIcon(folderPath);
+    }
+  }
+}
+function clearAllCategoryIcons(monitoredDirectories, categoryIcons) {
+  clearTopLevelFolderIcons(monitoredDirectories);
+  for (const category of CATEGORIES) {
+    const existing = categoryIcons[category];
+    if (existing && import_fs.default.existsSync(existing)) {
+      try {
+        import_fs.default.unlinkSync(existing);
+      } catch {
+      }
+    }
+    const canonical = getCategoryIconPath(category);
+    if (canonical !== existing && import_fs.default.existsSync(canonical)) {
+      try {
+        import_fs.default.unlinkSync(canonical);
+      } catch {
+      }
+    }
+  }
+  const genericDefault = getGenericDefaultIconPath();
+  if (import_fs.default.existsSync(genericDefault)) {
+    try {
+      import_fs.default.unlinkSync(genericDefault);
+    } catch {
+    }
   }
 }
 function iconFileToDataUrl(icoPath) {
@@ -4773,6 +4925,7 @@ var currentSettings = {
   autoRename: true,
   autostart: true,
   launchMinimized: false,
+  setCustomIcons: false,
   monitoredDirectories: [],
   scanInterval: 5,
   ignoredFileTypes: [".tmp", ".crdownload", ".part", ".ini"],
@@ -4876,10 +5029,21 @@ function loadSettings() {
         ...parsed,
         categoryIcons: { ...currentSettings.categoryIcons, ...parsed.categoryIcons || {} }
       };
+      if (parsed.setCustomIcons === void 0) {
+        currentSettings.setCustomIcons = Object.keys(currentSettings.categoryIcons).length > 0;
+      }
     }
   } catch (err) {
     console.error("Error loading settings:", err);
   }
+}
+function getCategoryIconPreviews() {
+  const previews = {};
+  for (const category of CATEGORIES) {
+    const icoPath = currentSettings.categoryIcons[category];
+    previews[category] = icoPath ? iconFileToDataUrl(icoPath) : null;
+  }
+  return previews;
 }
 function saveSettings() {
   try {
@@ -4969,7 +5133,9 @@ async function processFile(filePath) {
     if (createdFolder) {
       import_fs2.default.mkdirSync(targetDir, { recursive: true });
     }
-    ensureCategoryFolderIcon(targetDir, category, currentSettings.categoryIcons);
+    if (currentSettings.setCustomIcons) {
+      ensureCategoryFolderIcon(targetDir, category, currentSettings.categoryIcons);
+    }
     let targetPath = import_path2.default.join(targetDir, filename);
     if (filePath === targetPath) return;
     if (import_fs2.default.existsSync(targetPath)) {
@@ -5113,15 +5279,17 @@ import_electron2.ipcMain.handle("get-settings", () => {
 });
 import_electron2.ipcMain.handle("save-settings", (event, newSettings) => {
   const previousDirs = [...currentSettings.monitoredDirectories];
+  const { setCustomIcons: _ignored, ...rest } = newSettings;
   currentSettings = {
     ...currentSettings,
-    ...newSettings,
+    ...rest,
+    setCustomIcons: currentSettings.setCustomIcons,
     categoryIcons: newSettings.categoryIcons ?? currentSettings.categoryIcons
   };
   saveSettings();
   setupWatcher();
   const dirsChanged = previousDirs.length !== currentSettings.monitoredDirectories.length || previousDirs.some((d, i) => d !== currentSettings.monitoredDirectories[i]);
-  if (dirsChanged) {
+  if (dirsChanged && currentSettings.setCustomIcons) {
     for (const category of CATEGORIES) {
       const icoPath = currentSettings.categoryIcons[category];
       if (icoPath) {
@@ -5132,8 +5300,40 @@ import_electron2.ipcMain.handle("save-settings", (event, newSettings) => {
         );
       }
     }
+    const defaultIco = getGenericDefaultIconPath();
+    if (import_fs2.default.existsSync(defaultIco)) {
+      applyGenericDefaultIconToTopLevelFolders(
+        currentSettings.monitoredDirectories,
+        defaultIco
+      );
+    }
   }
   return true;
+});
+import_electron2.ipcMain.handle("set-custom-icons-enabled", async (_event, enabled) => {
+  const next = Boolean(enabled);
+  if (next === currentSettings.setCustomIcons) {
+    return { settings: currentSettings, previews: getCategoryIconPreviews() };
+  }
+  currentSettings.setCustomIcons = next;
+  if (next) {
+    currentSettings.categoryIcons = await applyBundledDefaultCategoryIcons(
+      currentSettings.monitoredDirectories
+    );
+    saveSettings();
+    sendLog(
+      "Custom icons enabled \u2014 applied category icons and DefaultIcon to existing top-level folders"
+    );
+  } else {
+    clearAllCategoryIcons(
+      currentSettings.monitoredDirectories,
+      currentSettings.categoryIcons
+    );
+    currentSettings.categoryIcons = {};
+    saveSettings();
+    sendLog("Custom icons disabled \u2014 restored Windows default folder icons");
+  }
+  return { settings: currentSettings, previews: getCategoryIconPreviews() };
 });
 import_electron2.ipcMain.on("window-control", (event, action) => {
   if (!mainWindow) return;
@@ -5171,6 +5371,9 @@ import_electron2.ipcMain.handle("select-image-file", async () => {
 import_electron2.ipcMain.handle(
   "set-category-icon",
   async (_event, payload) => {
+    if (!currentSettings.setCustomIcons) {
+      throw new Error("Enable Set Custom Icons first");
+    }
     const { category, sourceType, value } = payload;
     if (!category || !value?.trim()) {
       throw new Error("Category and image source are required");
@@ -5199,6 +5402,9 @@ import_electron2.ipcMain.handle(
   }
 );
 import_electron2.ipcMain.handle("clear-category-icon", (_event, category) => {
+  if (!currentSettings.setCustomIcons) {
+    throw new Error("Enable Set Custom Icons first");
+  }
   if (!CATEGORIES.includes(category)) {
     throw new Error(`Unknown category: ${category}`);
   }
@@ -5223,14 +5429,7 @@ import_electron2.ipcMain.handle("clear-category-icon", (_event, category) => {
   sendLog(`Custom icon cleared for ${category} folders`);
   return { category, settings: currentSettings };
 });
-import_electron2.ipcMain.handle("get-category-icon-previews", () => {
-  const previews = {};
-  for (const category of CATEGORIES) {
-    const icoPath = currentSettings.categoryIcons[category];
-    previews[category] = icoPath ? iconFileToDataUrl(icoPath) : null;
-  }
-  return previews;
-});
+import_electron2.ipcMain.handle("get-category-icon-previews", () => getCategoryIconPreviews());
 var gotTheLock = import_electron2.app.requestSingleInstanceLock();
 if (!gotTheLock) {
   import_electron2.app.quit();

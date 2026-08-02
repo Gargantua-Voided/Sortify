@@ -15,6 +15,7 @@ export interface AppSettings {
   autoRename: boolean;
   autostart: boolean;
   launchMinimized: boolean;
+  setCustomIcons: boolean;
   monitoredDirectories: string[];
   scanInterval: number;
   ignoredFileTypes: string[];
@@ -47,6 +48,9 @@ declare global {
         value: string;
       }) => Promise<CategoryIconResult>;
       clearCategoryIcon: (category: string) => Promise<CategoryIconResult>;
+      setCustomIconsEnabled: (
+        enabled: boolean
+      ) => Promise<{ settings: AppSettings; previews: Record<string, string | null> }>;
       getCategoryIconPreviews: () => Promise<Record<string, string | null>>;
       onLogMessage: (callback: (data: LogMessage) => void) => void;
       removeLogListener: () => void;

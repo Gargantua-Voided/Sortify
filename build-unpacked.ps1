@@ -5,6 +5,9 @@
 
 Write-Host "Building Sortify Unpacked..." -ForegroundColor Cyan
 
+. "$PSScriptRoot\build-version-helper.ps1"
+$version = Get-SortifyBuildVersion
+
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     Write-Host "npm is not installed or not in PATH." -ForegroundColor Red
     Read-Host -Prompt "Press Enter to exit"
@@ -34,15 +37,15 @@ if (Test-Path "release") {
     Remove-Item -Recurse -Force "release"
 }
 
-Write-Host "Creating unpacked Electron build in 'release' folder..." -ForegroundColor Yellow
+Write-Host "Creating unpacked Electron build in 'release' folder (v$version)..." -ForegroundColor Yellow
 Write-Host "Code signing disabled (unsigned local builds)." -ForegroundColor DarkGray
 $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
-npx electron-builder --win dir --x64
+npx electron-builder --win dir --x64 "-c.extraMetadata.version=$version"
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Electron builder failed."
     Read-Host -Prompt "Press Enter to exit"
     exit $LASTEXITCODE
 }
 
-Write-Host "Build complete! Unpacked application is in the 'release' folder." -ForegroundColor Green
+Write-Host "Build complete! Unpacked application is in the 'release' folder (v$version)." -ForegroundColor Green
 exit 0

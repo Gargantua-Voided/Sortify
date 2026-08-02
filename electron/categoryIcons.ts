@@ -2,6 +2,7 @@ import { app, nativeImage, net } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import crypto from 'crypto';
 import { execFileSync } from 'child_process';
 
 export const CATEGORIES = [
@@ -16,8 +17,12 @@ export const CATEGORIES = [
 
 export type CategoryName = (typeof CATEGORIES)[number];
 
-/** Hidden icon filename written inside each category folder (relative desktop.ini). */
+/**
+ * Legacy fixed name (pre cache-bust). Current writes use SortifyFolder-<hash>.ico
+ * so Explorer does not keep serving a stale bitmap for the same IconResource path.
+ */
 export const FOLDER_ICON_FILENAME = 'SortifyFolder.ico';
+const FOLDER_ICON_NAME_RE = /^sortifyfolder(-[a-f0-9]+)?\.ico$/i;
 
 const ICON_SIZES = [16, 32, 48, 256] as const;
 
@@ -33,9 +38,82 @@ export function getCategoryIconPath(category: string): string {
   return path.join(getCategoryIconsDir(), `${category}.ico`);
 }
 
+/** Bundled PNGs shipped with the app (see /default_icons). */
+export const DEFAULT_CATEGORY_ICON_FILES: Record<CategoryName, string> = {
+  Images: 'ImageIcon.png',
+  Videos: 'MediaIcon.png',
+  Audio: 'MusicIcon.png',
+  Documents: 'DocumentIcon.png',
+  Archives: 'ArchiveIcon.png',
+  Executables: 'AppIcon.png',
+  Others: 'OtherIcon.png',
+};
+
+/** Applied to existing top-level folders that are not Sortify category folders. */
+export const DEFAULT_FOLDER_ICON_FILE = 'DefaultIcon.png';
+
+export function getDefaultIconsDir(): string {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'default_icons');
+  }
+  // Dev / unpackaged: project root (package.json directory)
+  return path.join(app.getAppPath(), 'default_icons');
+}
+
+export function getGenericDefaultIconPath(): string {
+  return path.join(getCategoryIconsDir(), 'Default.ico');
+}
+
+export function isCategoryDirectoryName(name: string): boolean {
+  return (CATEGORIES as readonly string[]).includes(name);
+}
+
+/** Immediate child directories only — not recursive. */
+export function listTopLevelDirectories(parentPath: string): string[] {
+  if (!fs.existsSync(parentPath)) return [];
+  try {
+    return fs
+      .readdirSync(parentPath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(parentPath, entry.name));
+  } catch {
+    return [];
+  }
+}
+
 export function isSortifyFolderMetaFile(filePath: string): boolean {
-  const name = path.basename(filePath).toLowerCase();
-  return name === 'desktop.ini' || name === FOLDER_ICON_FILENAME.toLowerCase();
+  const name = path.basename(filePath);
+  return name.toLowerCase() === 'desktop.ini' || FOLDER_ICON_NAME_RE.test(name);
+}
+
+function folderIconFileName(icoBytes: Buffer): string {
+  const hash = crypto.createHash('sha1').update(icoBytes).digest('hex').slice(0, 10);
+  return `SortifyFolder-${hash}.ico`;
+}
+
+function listLocalFolderIconFiles(folderPath: string): string[] {
+  try {
+    return fs
+      .readdirSync(folderPath)
+      .filter((name) => FOLDER_ICON_NAME_RE.test(name))
+      .map((name) => path.join(folderPath, name));
+  } catch {
+    return [];
+  }
+}
+
+function removeLocalFolderIconFiles(folderPath: string, keepName?: string): void {
+  for (const filePath of listLocalFolderIconFiles(folderPath)) {
+    if (keepName && path.basename(filePath).toLowerCase() === keepName.toLowerCase()) {
+      continue;
+    }
+    clearFileAttribs(filePath);
+    try {
+      fs.unlinkSync(filePath);
+    } catch {
+      // ignore locked/in-use leftovers
+    }
+  }
 }
 
 /** Build a multi-size ICO file from PNG buffers (PNG-compressed ICO, Vista+). */
@@ -178,8 +256,13 @@ export async function convertSourceToCategoryIco(
   if (!CATEGORIES.includes(category as CategoryName)) {
     throw new Error(`Unknown category: ${category}`);
   }
+  return writeSourceToIcoFile(getCategoryIconPath(category), source);
+}
 
-  const dest = getCategoryIconPath(category);
+async function writeSourceToIcoFile(
+  dest: string,
+  source: { type: 'file' | 'url'; value: string }
+): Promise<string> {
   let stagedTemp: string | null = null;
 
   try {
@@ -217,6 +300,19 @@ export async function convertSourceToCategoryIco(
   }
 }
 
+/** Convert bundled DefaultIcon.png into userData/Default.ico. */
+export async function ensureBundledGenericDefaultIco(): Promise<string | null> {
+  const sourcePath = path.join(getDefaultIconsDir(), DEFAULT_FOLDER_ICON_FILE);
+  if (!fs.existsSync(sourcePath)) {
+    console.warn(`Missing bundled default folder icon: ${sourcePath}`);
+    return null;
+  }
+  return writeSourceToIcoFile(getGenericDefaultIconPath(), {
+    type: 'file',
+    value: sourcePath,
+  });
+}
+
 function clearFileAttribs(filePath: string): void {
   try {
     execFileSync('attrib', ['-h', '-s', '-r', filePath], { stdio: 'ignore', windowsHide: true });
@@ -225,15 +321,30 @@ function clearFileAttribs(filePath: string): void {
   }
 }
 
-function notifyShellFolderUpdate(folderPath: string): void {
+function notifyShellFolderUpdate(folderPath: string, icoFileName?: string): void {
   try {
-    // SHCNE_UPDATEDIR (0x00001000) + SHCNF_PATHW (0x0005) refreshes this folder in Explorer.
+    const escapedFolder = folderPath.replace(/'/g, "''");
+    const parentPath = path.dirname(folderPath);
+    const escapedParent = parentPath.replace(/'/g, "''");
+    const localIco = icoFileName ? path.join(folderPath, icoFileName).replace(/'/g, "''") : '';
+
+    // Explorer caches folder icons by IconResource path. Busting the filename is the
+    // main fix; these notifies help the parent view (where the category folder appears)
+    // pick up the new association without a full Explorer restart.
     const ps = [
       'Add-Type -Namespace Sortify -Name Shell32 -MemberDefinition @"',
       '[DllImport("shell32.dll", CharSet=CharSet.Unicode)] public static extern void SHChangeNotify(int wEventId, uint uFlags, string dwItem1, string dwItem2);',
+      '[DllImport("shell32.dll", CharSet=CharSet.Unicode)] public static extern void SHUpdateImageW(string pszHashItem, int iIndex, uint uFlags, int iImageIndex);',
       '"@;',
-      `[Sortify.Shell32]::SHChangeNotify(0x1000, 0x0005, '${folderPath.replace(/'/g, "''")}', $null);`,
-      '[Sortify.Shell32]::SHChangeNotify(0x08000000, 0x0000, $null, $null);',
+      // SHCNF_PATHW | SHCNF_FLUSHNOWAIT = 0x2005
+      `[Sortify.Shell32]::SHChangeNotify(0x2000, 0x2005, '${escapedFolder}', $null);`, // SHCNE_UPDATEITEM
+      `[Sortify.Shell32]::SHChangeNotify(0x1000, 0x2005, '${escapedFolder}', $null);`, // SHCNE_UPDATEDIR
+      `[Sortify.Shell32]::SHChangeNotify(0x1000, 0x2005, '${escapedParent}', $null);`, // parent view
+      `[Sortify.Shell32]::SHChangeNotify(0x2000, 0x2005, '${escapedParent}', $null);`,
+      icoFileName
+        ? `[Sortify.Shell32]::SHUpdateImageW('${localIco}', 0, 0, 0); [Sortify.Shell32]::SHChangeNotify(0x8000, 0x2005, '${localIco}', $null);` // SHCNE_UPDATEIMAGE
+        : '',
+      '[Sortify.Shell32]::SHChangeNotify(0x08000000, 0x0000, $null, $null);', // SHCNE_ASSOCCHANGED
     ].join(' ');
 
     execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
@@ -251,22 +362,24 @@ export function applyFolderIcon(folderPath: string, icoPath: string): void {
   if (!fs.existsSync(folderPath) || !fs.existsSync(icoPath)) return;
 
   const desktopIniPath = path.join(folderPath, 'desktop.ini');
-  const localIcoPath = path.join(folderPath, FOLDER_ICON_FILENAME);
+  const icoBytes = fs.readFileSync(icoPath);
+  const localIcoName = folderIconFileName(icoBytes);
+  const localIcoPath = path.join(folderPath, localIcoName);
 
-  // Relative icon path is more reliable than absolute AppData paths, and avoids
-  // stale shell state when the source image lived inside this same folder.
+  // Relative icon path is more reliable than absolute AppData paths. A content hash
+  // in the filename forces Explorer to treat updates as a new IconResource.
   const contents =
     `[.ShellClassInfo]\r\n` +
-    `IconResource=${FOLDER_ICON_FILENAME},0\r\n` +
-    `IconFile=${FOLDER_ICON_FILENAME}\r\n` +
+    `IconResource=${localIcoName},0\r\n` +
+    `IconFile=${localIcoName}\r\n` +
     `IconIndex=0\r\n`;
 
   try {
     clearFileAttribs(desktopIniPath);
     clearFileAttribs(localIcoPath);
+    removeLocalFolderIconFiles(folderPath, localIcoName);
 
-    // Copy icon bytes into the folder first (from userData cache, not the source image).
-    fs.writeFileSync(localIcoPath, fs.readFileSync(icoPath));
+    fs.writeFileSync(localIcoPath, icoBytes);
     fs.writeFileSync(desktopIniPath, contents, 'utf8');
 
     // Windows only reads desktop.ini for folders marked read-only.
@@ -274,7 +387,7 @@ export function applyFolderIcon(folderPath: string, icoPath: string): void {
     execFileSync('attrib', ['+h', '+s', localIcoPath], { stdio: 'ignore', windowsHide: true });
     execFileSync('attrib', ['+h', '+s', desktopIniPath], { stdio: 'ignore', windowsHide: true });
 
-    notifyShellFolderUpdate(folderPath);
+    notifyShellFolderUpdate(folderPath, localIcoName);
   } catch (err) {
     console.error(`Failed to apply folder icon to ${folderPath}:`, err);
     throw err;
@@ -285,18 +398,17 @@ export function clearFolderIcon(folderPath: string): void {
   if (process.platform !== 'win32') return;
 
   const desktopIniPath = path.join(folderPath, 'desktop.ini');
-  const localIcoPath = path.join(folderPath, FOLDER_ICON_FILENAME);
 
   try {
-    for (const filePath of [desktopIniPath, localIcoPath]) {
-      if (!fs.existsSync(filePath)) continue;
-      clearFileAttribs(filePath);
+    if (fs.existsSync(desktopIniPath)) {
+      clearFileAttribs(desktopIniPath);
       try {
-        fs.unlinkSync(filePath);
+        fs.unlinkSync(desktopIniPath);
       } catch {
         // ignore
       }
     }
+    removeLocalFolderIconFiles(folderPath);
     try {
       execFileSync('attrib', ['-r', folderPath], { stdio: 'ignore', windowsHide: true });
     } catch {
@@ -338,6 +450,106 @@ export function ensureCategoryFolderIcon(
     applyFolderIcon(folderPath, icoPath);
   } catch {
     // Non-fatal during file sorting.
+  }
+}
+
+/** Convert bundled default PNGs to userData .ico files and apply to monitored dirs. */
+export async function applyBundledDefaultCategoryIcons(
+  monitoredDirectories: string[]
+): Promise<Record<string, string>> {
+  const iconsDir = getDefaultIconsDir();
+  const result: Record<string, string> = {};
+
+  for (const category of CATEGORIES) {
+    const fileName = DEFAULT_CATEGORY_ICON_FILES[category];
+    const sourcePath = path.join(iconsDir, fileName);
+    if (!fs.existsSync(sourcePath)) {
+      console.warn(`Missing bundled default icon: ${sourcePath}`);
+      continue;
+    }
+
+    const icoPath = await convertSourceToCategoryIco(category, {
+      type: 'file',
+      value: sourcePath,
+    });
+    applyCategoryIconToMonitoredDirs(category, monitoredDirectories, icoPath);
+    result[category] = icoPath;
+  }
+
+  // Existing top-level folders (not category dirs, not nested) get DefaultIcon.png
+  const defaultIco = await ensureBundledGenericDefaultIco();
+  if (defaultIco) {
+    applyGenericDefaultIconToTopLevelFolders(monitoredDirectories, defaultIco);
+  }
+
+  return result;
+}
+
+/**
+ * Apply Default.ico to immediate child folders of each monitored directory,
+ * skipping Sortify category folders (those use their own icons).
+ */
+export function applyGenericDefaultIconToTopLevelFolders(
+  monitoredDirectories: string[],
+  icoPath: string
+): void {
+  if (!icoPath || !fs.existsSync(icoPath)) return;
+
+  for (const monitored of monitoredDirectories) {
+    for (const folderPath of listTopLevelDirectories(monitored)) {
+      if (isCategoryDirectoryName(path.basename(folderPath))) continue;
+      try {
+        applyFolderIcon(folderPath, icoPath);
+      } catch (err) {
+        console.error(`Failed to apply default icon to ${folderPath}:`, err);
+      }
+    }
+  }
+}
+
+/** Clear Sortify icons from every top-level folder under monitored dirs (non-recursive). */
+export function clearTopLevelFolderIcons(monitoredDirectories: string[]): void {
+  for (const monitored of monitoredDirectories) {
+    for (const folderPath of listTopLevelDirectories(monitored)) {
+      clearFolderIcon(folderPath);
+    }
+  }
+}
+
+/** Remove custom icons from all top-level folders and delete cached .ico files. */
+export function clearAllCategoryIcons(
+  monitoredDirectories: string[],
+  categoryIcons: Record<string, string>
+): void {
+  clearTopLevelFolderIcons(monitoredDirectories);
+
+  for (const category of CATEGORIES) {
+    const existing = categoryIcons[category];
+    if (existing && fs.existsSync(existing)) {
+      try {
+        fs.unlinkSync(existing);
+      } catch {
+        // ignore
+      }
+    }
+
+    const canonical = getCategoryIconPath(category);
+    if (canonical !== existing && fs.existsSync(canonical)) {
+      try {
+        fs.unlinkSync(canonical);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  const genericDefault = getGenericDefaultIconPath();
+  if (fs.existsSync(genericDefault)) {
+    try {
+      fs.unlinkSync(genericDefault);
+    } catch {
+      // ignore
+    }
   }
 }
 

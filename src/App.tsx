@@ -12,6 +12,7 @@ export default function App() {
       autoRename: true,
       autostart: false,
       launchMinimized: false,
+      setCustomIcons: false,
       monitoredDirectories: [],
       scanInterval: 5,
       ignoredFileTypes: [],
@@ -23,6 +24,10 @@ export default function App() {
     getCategories: async () => [...CATEGORIES],
     setCategoryIcon: async () => ({ category: '', settings: await (window.electronAPI as any)?.getSettings?.() }),
     clearCategoryIcon: async () => ({ category: '', settings: await (window.electronAPI as any)?.getSettings?.() }),
+    setCustomIconsEnabled: async () => ({
+      settings: await (window.electronAPI as any)?.getSettings?.(),
+      previews: {},
+    }),
     getCategoryIconPreviews: async () => ({}),
     onLogMessage: () => {},
     removeLogListener: () => {}
@@ -36,6 +41,7 @@ export default function App() {
   const [urlInputs, setUrlInputs] = useState<Record<string, string>>({});
   const [iconBusy, setIconBusy] = useState<string | null>(null);
   const [iconError, setIconError] = useState<string | null>(null);
+  const [customIconsBusy, setCustomIconsBusy] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -85,6 +91,25 @@ export default function App() {
   const toggleLaunchMinimized = () => {
     if (settings) {
       handleSaveSettings({ ...settings, launchMinimized: !settings.launchMinimized });
+    }
+  };
+
+  const toggleSetCustomIcons = async () => {
+    if (!settings || customIconsBusy || !api.setCustomIconsEnabled) return;
+    const next = !settings.setCustomIcons;
+    setCustomIconsBusy(true);
+    setIconError(null);
+    try {
+      const result = await api.setCustomIconsEnabled(next);
+      setSettings(result.settings);
+      setIconPreviews(result.previews);
+      if (!next && activeTab === 'icons') {
+        setActiveTab('settings');
+      }
+    } catch (err) {
+      setIconError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCustomIconsBusy(false);
     }
   };
 
@@ -240,11 +265,22 @@ export default function App() {
               Settings
             </button>
             <button
-              onClick={() => setActiveTab('icons')}
+              onClick={() => {
+                if (!settings.setCustomIcons) return;
+                setActiveTab('icons');
+              }}
+              disabled={!settings.setCustomIcons}
+              title={
+                settings.setCustomIcons
+                  ? 'Customize category folder icons'
+                  : 'Enable Set Custom Icons in Settings first'
+              }
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-md font-medium transition-colors ${
-                activeTab === 'icons' 
-                  ? 'bg-slate-800 text-sky-400' 
-                  : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                !settings.setCustomIcons
+                  ? 'text-slate-600 cursor-not-allowed opacity-45'
+                  : activeTab === 'icons'
+                    ? 'bg-slate-800 text-sky-400'
+                    : 'text-slate-400 hover:bg-slate-800 hover:text-white'
               }`}
             >
               <Palette className="w-4 h-4" />
@@ -336,6 +372,22 @@ export default function App() {
                           onClick={toggleLaunchMinimized}
                         >
                           <div className={`w-3 h-3 bg-white rounded-full transition-all ${settings.launchMinimized ? 'ml-auto' : 'bg-slate-400'}`}></div>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <label className="text-sm text-slate-400 flex-1 pr-4">
+                          Set Custom Icons
+                          {customIconsBusy && (
+                            <span className="block text-[11px] text-slate-500 mt-0.5">Applying…</span>
+                          )}
+                        </label>
+                        <div
+                          className={`w-10 h-5 rounded-full flex items-center px-1 relative transition-colors ${
+                            customIconsBusy ? 'opacity-50 cursor-wait' : 'cursor-pointer'
+                          } ${settings.setCustomIcons ? 'bg-sky-600' : 'bg-slate-700'}`}
+                          onClick={toggleSetCustomIcons}
+                        >
+                          <div className={`w-3 h-3 bg-white rounded-full transition-all ${settings.setCustomIcons ? 'ml-auto' : 'bg-slate-400'}`}></div>
                         </div>
                       </div>
                       
@@ -435,12 +487,12 @@ export default function App() {
             </>
           )}
 
-          {activeTab === 'icons' && (
+          {activeTab === 'icons' && settings.setCustomIcons && (
             <>
               <div className="shrink-0 mb-2">
                 <h2 className="text-2xl font-bold tracking-tight text-white">Custom Icons</h2>
                 <p className="text-slate-400 mt-1 text-sm">
-                  Customize Explorer folder icons for each sort category. Browse a local image or paste a URL - Sortify converts it to .ico automatically.
+                  Enabling Set Custom Icons applies category icons and DefaultIcon.png to existing top-level folders in monitored directories (not nested). Browse a local image or paste a URL to override any category — Sortify converts it to .ico automatically.
                 </p>
                 {iconError && (
                   <p className="text-sm text-red-400 mt-3">{iconError}</p>

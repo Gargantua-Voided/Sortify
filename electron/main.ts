@@ -6,10 +6,14 @@ import chokidar from 'chokidar';
 import AdmZip from 'adm-zip';
 import {
   CATEGORIES,
+  applyBundledDefaultCategoryIcons,
   applyCategoryIconToMonitoredDirs,
+  applyGenericDefaultIconToTopLevelFolders,
+  clearAllCategoryIcons,
   convertSourceToCategoryIco,
   ensureCategoryFolderIcon,
   getCategoryIconPath,
+  getGenericDefaultIconPath,
   iconFileToDataUrl,
   isSortifyFolderMetaFile,
 } from './categoryIcons';
@@ -35,6 +39,8 @@ interface AppSettings {
   autoRename: boolean;
   autostart: boolean;
   launchMinimized: boolean;
+  /** When false, folder icons stay Windows-default and Custom Icons UI is locked. */
+  setCustomIcons: boolean;
   monitoredDirectories: string[];
   scanInterval: number;
   ignoredFileTypes: string[];
@@ -49,6 +55,7 @@ let currentSettings: AppSettings = {
   autoRename: true,
   autostart: true,
   launchMinimized: false,
+  setCustomIcons: false,
   monitoredDirectories: [],
   scanInterval: 5,
   ignoredFileTypes: ['.tmp', '.crdownload', '.part', '.ini'],
@@ -178,6 +185,12 @@ function loadSettings() {
         ...parsed,
         categoryIcons: { ...currentSettings.categoryIcons, ...(parsed.categoryIcons || {}) },
       };
+
+      // Migrate older installs that already had custom icons before this flag existed.
+      if (parsed.setCustomIcons === undefined) {
+        currentSettings.setCustomIcons =
+          Object.keys(currentSettings.categoryIcons).length > 0;
+      }
     }
 
     // Autostart is applied after the window opens (see whenReady) so PowerShell
@@ -185,6 +198,15 @@ function loadSettings() {
   } catch (err) {
     console.error('Error loading settings:', err);
   }
+}
+
+function getCategoryIconPreviews(): Record<string, string | null> {
+  const previews: Record<string, string | null> = {};
+  for (const category of CATEGORIES) {
+    const icoPath = currentSettings.categoryIcons[category];
+    previews[category] = icoPath ? iconFileToDataUrl(icoPath) : null;
+  }
+  return previews;
 }
 
 // Save settings
@@ -268,7 +290,9 @@ async function processFile(filePath: string) {
     }
 
     // Apply custom category icon (new folders, and re-assert on existing ones)
-    ensureCategoryFolderIcon(targetDir, category, currentSettings.categoryIcons);
+    if (currentSettings.setCustomIcons) {
+      ensureCategoryFolderIcon(targetDir, category, currentSettings.categoryIcons);
+    }
 
     let targetPath = path.join(targetDir, filename);
 
@@ -451,9 +475,12 @@ ipcMain.handle('get-settings', () => {
 
 ipcMain.handle('save-settings', (event, newSettings: Partial<AppSettings>) => {
   const previousDirs = [...currentSettings.monitoredDirectories];
+  // setCustomIcons is owned by set-custom-icons-enabled (applies/clears icons).
+  const { setCustomIcons: _ignored, ...rest } = newSettings;
   currentSettings = {
     ...currentSettings,
-    ...newSettings,
+    ...rest,
+    setCustomIcons: currentSettings.setCustomIcons,
     categoryIcons: newSettings.categoryIcons ?? currentSettings.categoryIcons,
   };
   saveSettings();
@@ -464,7 +491,7 @@ ipcMain.handle('save-settings', (event, newSettings: Partial<AppSettings>) => {
     previousDirs.length !== currentSettings.monitoredDirectories.length ||
     previousDirs.some((d, i) => d !== currentSettings.monitoredDirectories[i]);
 
-  if (dirsChanged) {
+  if (dirsChanged && currentSettings.setCustomIcons) {
     for (const category of CATEGORIES) {
       const icoPath = currentSettings.categoryIcons[category];
       if (icoPath) {
@@ -475,9 +502,46 @@ ipcMain.handle('save-settings', (event, newSettings: Partial<AppSettings>) => {
         );
       }
     }
+
+    const defaultIco = getGenericDefaultIconPath();
+    if (fs.existsSync(defaultIco)) {
+      applyGenericDefaultIconToTopLevelFolders(
+        currentSettings.monitoredDirectories,
+        defaultIco
+      );
+    }
   }
 
   return true;
+});
+
+ipcMain.handle('set-custom-icons-enabled', async (_event, enabled: boolean) => {
+  const next = Boolean(enabled);
+  if (next === currentSettings.setCustomIcons) {
+    return { settings: currentSettings, previews: getCategoryIconPreviews() };
+  }
+
+  currentSettings.setCustomIcons = next;
+
+  if (next) {
+    currentSettings.categoryIcons = await applyBundledDefaultCategoryIcons(
+      currentSettings.monitoredDirectories
+    );
+    saveSettings();
+    sendLog(
+      'Custom icons enabled — applied category icons and DefaultIcon to existing top-level folders'
+    );
+  } else {
+    clearAllCategoryIcons(
+      currentSettings.monitoredDirectories,
+      currentSettings.categoryIcons
+    );
+    currentSettings.categoryIcons = {};
+    saveSettings();
+    sendLog('Custom icons disabled — restored Windows default folder icons');
+  }
+
+  return { settings: currentSettings, previews: getCategoryIconPreviews() };
 });
 
 ipcMain.on('window-control', (event, action) => {
@@ -523,6 +587,10 @@ ipcMain.handle(
     _event,
     payload: { category: string; sourceType: 'file' | 'url'; value: string }
   ) => {
+    if (!currentSettings.setCustomIcons) {
+      throw new Error('Enable Set Custom Icons first');
+    }
+
     const { category, sourceType, value } = payload;
     if (!category || !value?.trim()) {
       throw new Error('Category and image source are required');
@@ -555,6 +623,9 @@ ipcMain.handle(
 );
 
 ipcMain.handle('clear-category-icon', (_event, category: string) => {
+  if (!currentSettings.setCustomIcons) {
+    throw new Error('Enable Set Custom Icons first');
+  }
   if (!CATEGORIES.includes(category as (typeof CATEGORIES)[number])) {
     throw new Error(`Unknown category: ${category}`);
   }
@@ -587,14 +658,7 @@ ipcMain.handle('clear-category-icon', (_event, category: string) => {
   return { category, settings: currentSettings };
 });
 
-ipcMain.handle('get-category-icon-previews', () => {
-  const previews: Record<string, string | null> = {};
-  for (const category of CATEGORIES) {
-    const icoPath = currentSettings.categoryIcons[category];
-    previews[category] = icoPath ? iconFileToDataUrl(icoPath) : null;
-  }
-  return previews;
-});
+ipcMain.handle('get-category-icon-previews', () => getCategoryIconPreviews());
 
 // App Lifecycle
 const gotTheLock = app.requestSingleInstanceLock();
