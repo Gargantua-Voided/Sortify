@@ -254,7 +254,7 @@ export default function App() {
     setCacheStatus(null);
     try {
       const result = await api.clearExplorerIconCache();
-      setCacheStatus(result.message);
+      setCacheStatus(result.ok ? result.message : `Error: ${result.message}`);
     } catch (err) {
       setCacheStatus(err instanceof Error ? err.message : String(err));
     } finally {

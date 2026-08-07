@@ -4733,10 +4733,7 @@ function notifyShellFolderUpdate(folderPath, icoFileName) {
     const escapedParent = parentPath.replace(/'/g, "''");
     const localIco = icoFileName ? import_path.default.join(folderPath, icoFileName).replace(/'/g, "''") : "";
     const ps = [
-      'Add-Type -Namespace Sortify -Name Shell32 -MemberDefinition @"',
-      '[DllImport("shell32.dll", CharSet=CharSet.Unicode)] public static extern void SHChangeNotify(int wEventId, uint uFlags, string dwItem1, string dwItem2);',
-      '[DllImport("shell32.dll", CharSet=CharSet.Unicode)] public static extern void SHUpdateImageW(string pszHashItem, int iIndex, uint uFlags, int iImageIndex);',
-      '"@;',
+      `Add-Type -Namespace Sortify -Name Shell32 -MemberDefinition '[DllImport("shell32.dll", CharSet=CharSet.Unicode)] public static extern void SHChangeNotify(int wEventId, uint uFlags, string dwItem1, string dwItem2); [DllImport("shell32.dll", CharSet=CharSet.Unicode)] public static extern void SHUpdateImageW(string pszHashItem, int iIndex, uint uFlags, int iImageIndex);';`,
       // SHCNF_PATHW | SHCNF_FLUSHNOWAIT = 0x2005
       `[Sortify.Shell32]::SHChangeNotify(0x2000, 0x2005, '${escapedFolder}', $null);`,
       // SHCNE_UPDATEITEM
@@ -4751,7 +4748,7 @@ function notifyShellFolderUpdate(folderPath, icoFileName) {
     ].join(" ");
     const child = (0, import_child_process.spawn)(
       "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", ps],
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps],
       { stdio: "ignore", windowsHide: true, detached: true }
     );
     child.unref();
@@ -4760,47 +4757,155 @@ function notifyShellFolderUpdate(folderPath, icoFileName) {
 }
 function clearExplorerIconCache() {
   if (process.platform !== "win32") {
-    return { ok: false, message: "Explorer icon cache clearing is only available on Windows" };
+    return Promise.resolve({
+      ok: false,
+      message: "Explorer icon cache clearing is only available on Windows"
+    });
   }
   const localAppData = process.env.LOCALAPPDATA || import_path.default.join(import_os.default.homedir(), "AppData", "Local");
   const explorerCacheDir = import_path.default.join(localAppData, "Microsoft", "Windows", "Explorer");
   const legacyIconCache = import_path.default.join(localAppData, "IconCache.db");
-  const ps = [
-    "try { Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue } catch {}",
-    "Start-Sleep -Milliseconds 600",
-    `Remove-Item -LiteralPath ${JSON.stringify(legacyIconCache)} -Force -ErrorAction SilentlyContinue`,
-    `if (Test-Path -LiteralPath ${JSON.stringify(explorerCacheDir)}) {`,
-    `  Get-ChildItem -LiteralPath ${JSON.stringify(explorerCacheDir)} -Force -ErrorAction SilentlyContinue |`,
-    `    Where-Object { $_.Name -like 'iconcache*' } |`,
-    `    Remove-Item -Force -ErrorAction SilentlyContinue`,
-    "}",
-    "Start-Process explorer",
-    "Start-Sleep -Milliseconds 800",
-    "try {",
-    '  Add-Type -Namespace Sortify -Name Shell32 -MemberDefinition @"',
-    '  [DllImport("shell32.dll")] public static extern void SHChangeNotify(int wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);',
-    '"@',
-    "  [Sortify.Shell32]::SHChangeNotify(0x08000000, 0x0000, [IntPtr]::Zero, [IntPtr]::Zero)",
-    '  & "$env:SystemRoot\\System32\\ie4uinit.exe" -show',
-    "} catch {}"
-  ].join("; ");
-  try {
+  const scriptPath = import_path.default.join(
+    import_os.default.tmpdir(),
+    `sortify-clear-icon-cache-${process.pid}-${Date.now()}.ps1`
+  );
+  const script = `
+$ErrorActionPreference = 'SilentlyContinue'
+$legacy = ${JSON.stringify(legacyIconCache)}
+$explorerDir = ${JSON.stringify(explorerCacheDir)}
+
+function Stop-ExplorerShell {
+  Get-Process -Name explorer -ErrorAction SilentlyContinue | Stop-Process -Force
+  Start-Sleep -Milliseconds 400
+  Get-Process -Name explorer -ErrorAction SilentlyContinue | Stop-Process -Force
+}
+
+function Remove-CacheTarget([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { return $true }
+  for ($i = 0; $i -lt 5; $i++) {
+    Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $Path)) { return $true }
+    Stop-ExplorerShell
+    Start-Sleep -Milliseconds 300
+  }
+  return $false
+}
+
+Stop-ExplorerShell
+Start-Sleep -Milliseconds 500
+
+$removed = 0
+$failed = 0
+$targets = @()
+
+if (Test-Path -LiteralPath $legacy) {
+  $targets += Get-Item -LiteralPath $legacy -Force
+}
+if (Test-Path -LiteralPath $explorerDir) {
+  $targets += @(
+    Get-ChildItem -LiteralPath $explorerDir -Force |
+      Where-Object { $_.Name -like 'iconcache*' -or $_.Name -like 'thumbcache*' }
+  )
+}
+
+foreach ($t in $targets) {
+  if (Remove-CacheTarget $t.FullName) { $removed++ } else { $failed++ }
+}
+
+Start-Process -FilePath "$env:SystemRoot\\explorer.exe"
+Start-Sleep -Milliseconds 1200
+
+try {
+  Add-Type -Namespace Sortify -Name ShellNotify -MemberDefinition '[DllImport("shell32.dll")] public static extern void SHChangeNotify(int wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);'
+  [Sortify.ShellNotify]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+} catch {}
+
+$ie4 = Join-Path $env:SystemRoot 'System32\\ie4uinit.exe'
+if (Test-Path -LiteralPath $ie4) {
+  & $ie4 -show 2>$null
+}
+
+Write-Output ("removed=" + $removed + ";failed=" + $failed + ";targets=" + $targets.Count)
+if ($failed -gt 0 -and $removed -eq 0 -and $targets.Count -gt 0) {
+  exit 1
+}
+exit 0
+`.trim();
+  return new Promise((resolve3) => {
+    try {
+      import_fs.default.writeFileSync(scriptPath, script, "utf8");
+    } catch (err) {
+      resolve3({
+        ok: false,
+        message: `Failed to write cache-clear script: ${err instanceof Error ? err.message : String(err)}`
+      });
+      return;
+    }
     const child = (0, import_child_process.spawn)(
       "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps],
-      { stdio: "ignore", windowsHide: true, detached: true }
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
+      { windowsHide: true }
     );
-    child.unref();
-    return {
-      ok: true,
-      message: "Explorer icon cache clear started \u2014 folder icons should refresh shortly"
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    const finish = (result) => {
+      try {
+        import_fs.default.unlinkSync(scriptPath);
+      } catch {
+      }
+      resolve3(result);
     };
-  } catch (err) {
-    return {
-      ok: false,
-      message: `Failed to clear icon cache: ${err instanceof Error ? err.message : String(err)}`
-    };
-  }
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+      }
+      finish({
+        ok: false,
+        message: "Timed out clearing Explorer icon cache (Explorer may still be restarting)"
+      });
+    }, 2e4);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      finish({
+        ok: false,
+        message: `Failed to start cache clear: ${err.message}`
+      });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      const removedMatch = stdout.match(/removed=(\d+)/);
+      const failedMatch = stdout.match(/failed=(\d+)/);
+      const targetsMatch = stdout.match(/targets=(\d+)/);
+      const removed = removedMatch ? Number(removedMatch[1]) : 0;
+      const failed = failedMatch ? Number(failedMatch[1]) : 0;
+      const targets = targetsMatch ? Number(targetsMatch[1]) : 0;
+      if (code === 0) {
+        if (removed > 0) {
+          finish({
+            ok: true,
+            message: `Explorer icon cache cleared (${removed} file${removed === 1 ? "" : "s"} removed${failed > 0 ? `, ${failed} locked` : ""}) \u2014 Explorer restarted`
+          });
+        } else {
+          finish({
+            ok: true,
+            message: "Explorer restarted and icon cache refresh requested (no cache files were present to delete)"
+          });
+        }
+        return;
+      }
+      finish({
+        ok: false,
+        message: targets > 0 && failed > 0 ? `Could not delete icon cache (${failed} of ${targets} files locked). Try again, or reboot once.` : `Failed to clear icon cache (exit ${code ?? "unknown"})${stderr.trim() ? `: ${stderr.trim().slice(0, 200)}` : ""}`
+      });
+    });
+  });
 }
 function applyFolderIcon(folderPath, icoPath, options) {
   if (process.platform !== "win32") return;
@@ -5450,7 +5555,7 @@ import_electron2.ipcMain.handle("save-settings", async (_event, newSettings) => 
       sendLog(
         `Applied custom icons to ${addedDirs.length} newly added monitored director${addedDirs.length === 1 ? "y" : "ies"}`
       );
-      const cacheResult = clearExplorerIconCache();
+      const cacheResult = await clearExplorerIconCache();
       sendLog(cacheResult.ok ? cacheResult.message : `Error: ${cacheResult.message}`);
     } catch (err) {
       sendLog(`Error applying custom icons to new directories: ${String(err)}`);
@@ -5486,7 +5591,7 @@ import_electron2.ipcMain.handle("set-custom-icons-enabled", async (_event, enabl
         sendLog(
           "Custom icons enabled \u2014 applied category icons and DefaultIcon to existing top-level folders"
         );
-        const cacheResult = clearExplorerIconCache();
+        const cacheResult = await clearExplorerIconCache();
         sendLog(cacheResult.ok ? cacheResult.message : `Error: ${cacheResult.message}`);
       }
     } catch (err) {
@@ -5606,8 +5711,8 @@ import_electron2.ipcMain.handle("clear-category-icon", (_event, category) => {
   return { category, settings: currentSettings };
 });
 import_electron2.ipcMain.handle("get-category-icon-previews", () => getCategoryIconPreviews());
-import_electron2.ipcMain.handle("clear-explorer-icon-cache", () => {
-  const result = clearExplorerIconCache();
+import_electron2.ipcMain.handle("clear-explorer-icon-cache", async () => {
+  const result = await clearExplorerIconCache();
   if (result.ok) {
     sendLog(result.message);
   } else {

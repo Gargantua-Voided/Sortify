@@ -553,7 +553,7 @@ ipcMain.handle('save-settings', async (_event, newSettings: Partial<AppSettings>
         }`
       );
 
-      const cacheResult = clearExplorerIconCache();
+      const cacheResult = await clearExplorerIconCache();
       sendLog(cacheResult.ok ? cacheResult.message : `Error: ${cacheResult.message}`);
     } catch (err) {
       sendLog(`Error applying custom icons to new directories: ${String(err)}`);
@@ -605,7 +605,7 @@ ipcMain.handle('set-custom-icons-enabled', async (_event, enabled: boolean) => {
           'Custom icons enabled — applied category icons and DefaultIcon to existing top-level folders'
         );
         // Explorer often keeps stale folder bitmaps until the icon cache is wiped.
-        const cacheResult = clearExplorerIconCache();
+        const cacheResult = await clearExplorerIconCache();
         sendLog(cacheResult.ok ? cacheResult.message : `Error: ${cacheResult.message}`);
       }
     } catch (err) {
@@ -750,8 +750,8 @@ ipcMain.handle('clear-category-icon', (_event, category: string) => {
 
 ipcMain.handle('get-category-icon-previews', () => getCategoryIconPreviews());
 
-ipcMain.handle('clear-explorer-icon-cache', () => {
-  const result = clearExplorerIconCache();
+ipcMain.handle('clear-explorer-icon-cache', async () => {
+  const result = await clearExplorerIconCache();
   if (result.ok) {
     sendLog(result.message);
   } else {

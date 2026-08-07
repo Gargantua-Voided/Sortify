@@ -334,11 +334,9 @@ function notifyShellFolderUpdate(folderPath: string, icoFileName?: string): void
     // Explorer caches folder icons by IconResource path. Busting the filename is the
     // main fix; these notifies help the parent view (where the category folder appears)
     // pick up the new association without a full Explorer restart.
+    // Use -MemberDefinition string (not a here-string) so a one-line -Command stays valid.
     const ps = [
-      'Add-Type -Namespace Sortify -Name Shell32 -MemberDefinition @"',
-      '[DllImport("shell32.dll", CharSet=CharSet.Unicode)] public static extern void SHChangeNotify(int wEventId, uint uFlags, string dwItem1, string dwItem2);',
-      '[DllImport("shell32.dll", CharSet=CharSet.Unicode)] public static extern void SHUpdateImageW(string pszHashItem, int iIndex, uint uFlags, int iImageIndex);',
-      '"@;',
+      "Add-Type -Namespace Sortify -Name Shell32 -MemberDefinition '[DllImport(\"shell32.dll\", CharSet=CharSet.Unicode)] public static extern void SHChangeNotify(int wEventId, uint uFlags, string dwItem1, string dwItem2); [DllImport(\"shell32.dll\", CharSet=CharSet.Unicode)] public static extern void SHUpdateImageW(string pszHashItem, int iIndex, uint uFlags, int iImageIndex);';",
       // SHCNF_PATHW | SHCNF_FLUSHNOWAIT = 0x2005
       `[Sortify.Shell32]::SHChangeNotify(0x2000, 0x2005, '${escapedFolder}', $null);`, // SHCNE_UPDATEITEM
       `[Sortify.Shell32]::SHChangeNotify(0x1000, 0x2005, '${escapedFolder}', $null);`, // SHCNE_UPDATEDIR
@@ -353,7 +351,7 @@ function notifyShellFolderUpdate(folderPath: string, icoFileName?: string): void
     // Fire-and-forget — never block the file watcher / sort loop on Explorer.
     const child = spawn(
       'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command', ps],
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ps],
       { stdio: 'ignore', windowsHide: true, detached: true }
     );
     child.unref();
@@ -363,56 +361,184 @@ function notifyShellFolderUpdate(folderPath: string, icoFileName?: string): void
 }
 
 /**
- * Delete Windows Explorer icon cache DBs and restart Explorer so folder icons reload.
- * Runs in a detached process so the file watcher / sort loop is never blocked.
- * Desktop taskbar may flicker briefly — that's expected.
+ * Delete Windows Explorer icon/thumb cache DBs and restart Explorer so folder icons reload.
+ * Runs a real .ps1 (not a broken one-liner) and waits for completion so the UI
+ * reports success only when Explorer was actually restarted.
+ * Desktop/taskbar may flicker briefly — that's expected.
  */
-export function clearExplorerIconCache(): { ok: boolean; message: string } {
+export function clearExplorerIconCache(): Promise<{ ok: boolean; message: string }> {
   if (process.platform !== 'win32') {
-    return { ok: false, message: 'Explorer icon cache clearing is only available on Windows' };
+    return Promise.resolve({
+      ok: false,
+      message: 'Explorer icon cache clearing is only available on Windows',
+    });
   }
 
   const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
   const explorerCacheDir = path.join(localAppData, 'Microsoft', 'Windows', 'Explorer');
   const legacyIconCache = path.join(localAppData, 'IconCache.db');
+  const scriptPath = path.join(
+    os.tmpdir(),
+    `sortify-clear-icon-cache-${process.pid}-${Date.now()}.ps1`
+  );
 
-  const ps = [
-    'try { Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue } catch {}',
-    'Start-Sleep -Milliseconds 600',
-    `Remove-Item -LiteralPath ${JSON.stringify(legacyIconCache)} -Force -ErrorAction SilentlyContinue`,
-    `if (Test-Path -LiteralPath ${JSON.stringify(explorerCacheDir)}) {`,
-    `  Get-ChildItem -LiteralPath ${JSON.stringify(explorerCacheDir)} -Force -ErrorAction SilentlyContinue |`,
-    `    Where-Object { $_.Name -like 'iconcache*' } |`,
-    `    Remove-Item -Force -ErrorAction SilentlyContinue`,
-    '}',
-    'Start-Process explorer',
-    'Start-Sleep -Milliseconds 800',
-    'try {',
-    '  Add-Type -Namespace Sortify -Name Shell32 -MemberDefinition @"',
-    '  [DllImport("shell32.dll")] public static extern void SHChangeNotify(int wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);',
-    '"@',
-    '  [Sortify.Shell32]::SHChangeNotify(0x08000000, 0x0000, [IntPtr]::Zero, [IntPtr]::Zero)',
-    '  & "$env:SystemRoot\\System32\\ie4uinit.exe" -show',
-    '} catch {}',
-  ].join('; ');
+  // Paths embedded via JSON.stringify so spaces/quotes are safe for PowerShell.
+  const script = `
+$ErrorActionPreference = 'SilentlyContinue'
+$legacy = ${JSON.stringify(legacyIconCache)}
+$explorerDir = ${JSON.stringify(explorerCacheDir)}
 
-  try {
+function Stop-ExplorerShell {
+  Get-Process -Name explorer -ErrorAction SilentlyContinue | Stop-Process -Force
+  Start-Sleep -Milliseconds 400
+  Get-Process -Name explorer -ErrorAction SilentlyContinue | Stop-Process -Force
+}
+
+function Remove-CacheTarget([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { return $true }
+  for ($i = 0; $i -lt 5; $i++) {
+    Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $Path)) { return $true }
+    Stop-ExplorerShell
+    Start-Sleep -Milliseconds 300
+  }
+  return $false
+}
+
+Stop-ExplorerShell
+Start-Sleep -Milliseconds 500
+
+$removed = 0
+$failed = 0
+$targets = @()
+
+if (Test-Path -LiteralPath $legacy) {
+  $targets += Get-Item -LiteralPath $legacy -Force
+}
+if (Test-Path -LiteralPath $explorerDir) {
+  $targets += @(
+    Get-ChildItem -LiteralPath $explorerDir -Force |
+      Where-Object { $_.Name -like 'iconcache*' -or $_.Name -like 'thumbcache*' }
+  )
+}
+
+foreach ($t in $targets) {
+  if (Remove-CacheTarget $t.FullName) { $removed++ } else { $failed++ }
+}
+
+Start-Process -FilePath "$env:SystemRoot\\explorer.exe"
+Start-Sleep -Milliseconds 1200
+
+try {
+  Add-Type -Namespace Sortify -Name ShellNotify -MemberDefinition '[DllImport("shell32.dll")] public static extern void SHChangeNotify(int wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);'
+  [Sortify.ShellNotify]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+} catch {}
+
+$ie4 = Join-Path $env:SystemRoot 'System32\\ie4uinit.exe'
+if (Test-Path -LiteralPath $ie4) {
+  & $ie4 -show 2>$null
+}
+
+Write-Output ("removed=" + $removed + ";failed=" + $failed + ";targets=" + $targets.Count)
+if ($failed -gt 0 -and $removed -eq 0 -and $targets.Count -gt 0) {
+  exit 1
+}
+exit 0
+`.trim();
+
+  return new Promise((resolve) => {
+    try {
+      fs.writeFileSync(scriptPath, script, 'utf8');
+    } catch (err) {
+      resolve({
+        ok: false,
+        message: `Failed to write cache-clear script: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      return;
+    }
+
     const child = spawn(
       'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ps],
-      { stdio: 'ignore', windowsHide: true, detached: true }
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
+      { windowsHide: true }
     );
-    child.unref();
-    return {
-      ok: true,
-      message: 'Explorer icon cache clear started — folder icons should refresh shortly',
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    const finish = (result: { ok: boolean; message: string }) => {
+      try {
+        fs.unlinkSync(scriptPath);
+      } catch {
+        // temp cleanup is best-effort
+      }
+      resolve(result);
     };
-  } catch (err) {
-    return {
-      ok: false,
-      message: `Failed to clear icon cache: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
+
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        // ignore
+      }
+      finish({
+        ok: false,
+        message: 'Timed out clearing Explorer icon cache (Explorer may still be restarting)',
+      });
+    }, 20000);
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      finish({
+        ok: false,
+        message: `Failed to start cache clear: ${err.message}`,
+      });
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      const removedMatch = stdout.match(/removed=(\d+)/);
+      const failedMatch = stdout.match(/failed=(\d+)/);
+      const targetsMatch = stdout.match(/targets=(\d+)/);
+      const removed = removedMatch ? Number(removedMatch[1]) : 0;
+      const failed = failedMatch ? Number(failedMatch[1]) : 0;
+      const targets = targetsMatch ? Number(targetsMatch[1]) : 0;
+
+      if (code === 0) {
+        if (removed > 0) {
+          finish({
+            ok: true,
+            message: `Explorer icon cache cleared (${removed} file${removed === 1 ? '' : 's'} removed${
+              failed > 0 ? `, ${failed} locked` : ''
+            }) — Explorer restarted`,
+          });
+        } else {
+          finish({
+            ok: true,
+            message:
+              'Explorer restarted and icon cache refresh requested (no cache files were present to delete)',
+          });
+        }
+        return;
+      }
+
+      finish({
+        ok: false,
+        message:
+          targets > 0 && failed > 0
+            ? `Could not delete icon cache (${failed} of ${targets} files locked). Try again, or reboot once.`
+            : `Failed to clear icon cache (exit ${code ?? 'unknown'})${
+                stderr.trim() ? `: ${stderr.trim().slice(0, 200)}` : ''
+              }`,
+      });
+    });
+  });
 }
 
 export function applyFolderIcon(
