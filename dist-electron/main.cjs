@@ -4513,15 +4513,15 @@ function getCategoryIconPath(category) {
   return import_path.default.join(getCategoryIconsDir(), `${category}.ico`);
 }
 var DEFAULT_CATEGORY_ICON_FILES = {
-  Images: "ImageIcon.png",
-  Videos: "MediaIcon.png",
-  Audio: "MusicIcon.png",
-  Documents: "DocumentIcon.png",
-  Archives: "ArchiveIcon.png",
-  Executables: "AppIcon.png",
-  Others: "OtherIcon.png"
+  Images: "Image.png",
+  Videos: "Video.png",
+  Audio: "Music.png",
+  Documents: "Docs.png",
+  Archives: "Archives.png",
+  Executables: "Apps.png",
+  Others: "Other.png"
 };
-var DEFAULT_FOLDER_ICON_FILE = "DefaultIcon.png";
+var DEFAULT_FOLDER_ICON_FILE = "Default.png";
 function getDefaultIconsDir() {
   if (import_electron.app.isPackaged) {
     return import_path.default.join(process.resourcesPath, "default_icons");
@@ -5589,7 +5589,7 @@ import_electron2.ipcMain.handle("set-custom-icons-enabled", async (_event, enabl
         );
       } else {
         sendLog(
-          "Custom icons enabled \u2014 applied category icons and DefaultIcon to existing top-level folders"
+          "Custom icons enabled \u2014 applied category icons and Default to existing top-level folders"
         );
         const cacheResult = await clearExplorerIconCache();
         sendLog(cacheResult.ok ? cacheResult.message : `Error: ${cacheResult.message}`);
