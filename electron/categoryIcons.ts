@@ -40,17 +40,17 @@ export function getCategoryIconPath(category: string): string {
 
 /** Bundled PNGs shipped with the app (see /default_icons). */
 export const DEFAULT_CATEGORY_ICON_FILES: Record<CategoryName, string> = {
-  Images: 'ImageIcon.png',
-  Videos: 'MediaIcon.png',
-  Audio: 'MusicIcon.png',
-  Documents: 'DocumentIcon.png',
-  Archives: 'ArchiveIcon.png',
-  Executables: 'AppIcon.png',
-  Others: 'OtherIcon.png',
+  Images: 'Image.png',
+  Videos: 'Video.png',
+  Audio: 'Music.png',
+  Documents: 'Docs.png',
+  Archives: 'Archives.png',
+  Executables: 'Apps.png',
+  Others: 'Other.png',
 };
 
 /** Applied to existing top-level folders that are not Sortify category folders. */
-export const DEFAULT_FOLDER_ICON_FILE = 'DefaultIcon.png';
+export const DEFAULT_FOLDER_ICON_FILE = 'Default.png';
 
 export function getDefaultIconsDir(): string {
   if (app.isPackaged) {
@@ -303,7 +303,7 @@ async function writeSourceToIcoFile(
   }
 }
 
-/** Convert bundled DefaultIcon.png into userData/Default.ico. */
+/** Convert bundled Default.png into userData/Default.ico. */
 export async function ensureBundledGenericDefaultIco(): Promise<string | null> {
   const sourcePath = path.join(getDefaultIconsDir(), DEFAULT_FOLDER_ICON_FILE);
   if (!fs.existsSync(sourcePath)) {
@@ -678,7 +678,7 @@ export function ensureCategoryFolderIcon(
 
 /**
  * Apply the right Sortify icon to a top-level folder under a monitored directory:
- * category folders get their category icon; everything else gets DefaultIcon.
+ * category folders get their category icon; everything else gets Default.
  * No-ops when the icon is already valid.
  */
 export function ensureTopLevelFolderIcon(
@@ -791,7 +791,7 @@ export async function applyBundledDefaultCategoryIcons(
     result[category] = icoPath;
   }
 
-  // Existing top-level folders (not category dirs, not nested) get DefaultIcon.png
+  // Existing top-level folders (not category dirs, not nested) get Default.png
   const defaultIco = await ensureBundledGenericDefaultIco();
   if (defaultIco) {
     applyGenericDefaultIconToTopLevelFolders(monitoredDirectories, defaultIco);
