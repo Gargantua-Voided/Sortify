@@ -602,7 +602,7 @@ ipcMain.handle('set-custom-icons-enabled', async (_event, enabled: boolean) => {
         );
       } else {
         sendLog(
-          'Custom icons enabled — applied category icons and DefaultIcon to existing top-level folders'
+          'Custom icons enabled — applied category icons and Default to existing top-level folders'
         );
         // Explorer often keeps stale folder bitmaps until the icon cache is wiped.
         const cacheResult = await clearExplorerIconCache();

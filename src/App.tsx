@@ -541,7 +541,7 @@ export default function App() {
               <div className="shrink-0 mb-2">
                 <h2 className="text-2xl font-bold tracking-tight text-white">Custom Icons</h2>
                 <p className="text-slate-400 mt-1 text-sm">
-                  Enabling Set Custom Icons applies category icons and DefaultIcon.png to existing top-level folders in monitored directories (not nested). Browse a local image or paste a URL to override any category — Sortify converts it to .ico automatically.
+                  Enabling Set Custom Icons applies category icons and Default.png to existing top-level folders in monitored directories (not nested). Browse a local image or paste a URL to override any category — Sortify converts it to .ico automatically.
                 </p>
                 {iconError && (
                   <p className="text-sm text-red-400 mt-3">{iconError}</p>
