@@ -65,9 +65,10 @@ To build an unpacked, runnable version of the application for Windows, run the p
 ```
 
 This script will:
-1. Install NPM dependencies.
-2. Build the React frontend and Electron backend using Vite and esbuild.
-3. Package the unpacked application using `electron-builder` into the `release/` directory.
+1. Prompt for a version (defaults to `1.0.0` after 3 seconds of idle input).
+2. Automatically install npm dependencies if they are missing (including Vite, esbuild, Electron, and electron-builder).
+3. Build the React frontend and Electron backend using Vite and esbuild.
+4. Package the unpacked application using `electron-builder` into the `release/` directory.
 
 Alternatively, you can manually trigger the build:
 ```bash
