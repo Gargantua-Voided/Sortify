@@ -7,22 +7,7 @@ Write-Host "Building Sortify Unpacked..." -ForegroundColor Cyan
 
 . "$PSScriptRoot\build-version-helper.ps1"
 $version = Get-SortifyBuildVersion
-
-if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-    Write-Host "npm is not installed or not in PATH." -ForegroundColor Red
-    Read-Host -Prompt "Press Enter to exit"
-    exit 1
-}
-
-if (-not (Test-Path "node_modules")) {
-    Write-Host "Installing dependencies..." -ForegroundColor Yellow
-    npm install
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "NPM install failed."
-        Read-Host -Prompt "Press Enter to exit"
-        exit $LASTEXITCODE
-    }
-}
+Install-SortifyBuildDependencies
 
 Write-Host "Building the React app and Electron scripts..." -ForegroundColor Yellow
 npm run build
