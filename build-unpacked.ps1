@@ -25,12 +25,7 @@ if (Test-Path "release") {
 Write-Host "Creating unpacked Electron build in 'release' folder (v$version)..." -ForegroundColor Yellow
 Write-Host "Code signing disabled (unsigned local builds)." -ForegroundColor DarkGray
 $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
-npx electron-builder --win dir --x64 "-c.extraMetadata.version=$version"
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Electron builder failed."
-    Read-Host -Prompt "Press Enter to exit"
-    exit $LASTEXITCODE
-}
+Invoke-SortifyElectronBuilder -BuilderArgs @('--win', 'dir', '--x64', "-c.extraMetadata.version=$version") -RepoRoot $PSScriptRoot
 
 Write-Host "Build complete! Unpacked application is in the 'release' folder (v$version)." -ForegroundColor Green
 exit 0

@@ -21,12 +21,7 @@ Write-Host "Packaging the application with Electron Builder (v$version)..." -For
 Write-Host "NSIS one-click is disabled - the installer will let users choose the install directory." -ForegroundColor DarkGray
 Write-Host "Code signing disabled (unsigned local builds)." -ForegroundColor DarkGray
 $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
-npx electron-builder --win --x64 "-c.extraMetadata.version=$version"
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Electron builder failed."
-    Read-Host -Prompt "Press Enter to exit"
-    exit $LASTEXITCODE
-}
+Invoke-SortifyElectronBuilder -BuilderArgs @('--win', '--x64', "-c.extraMetadata.version=$version") -RepoRoot $PSScriptRoot
 
 Write-Host "Build complete! Check the release directory for the installer (v$version)." -ForegroundColor Green
 exit 0

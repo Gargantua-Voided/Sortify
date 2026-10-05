@@ -139,3 +139,180 @@ function Get-SortifyBuildVersion {
     }
     return $Default
 }
+
+# electron-builder writes the project path, %TEMP%, and the electron-builder cache
+# path into release/builder-debug.yml, and NSIS can embed those same paths in the
+# installer stub. Stage the build on a drive-root folder that has no username.
+function Initialize-SortifyNeutralBuildEnvironment {
+    $root = Join-Path $env:SystemDrive 'SortifyBuild'
+    $script:SortifyNeutralRoot = Join-Path $root 'src'
+    $temp = Join-Path $root 'temp'
+    $cache = Join-Path $root 'cache'
+
+    New-Item -ItemType Directory -Force -Path $temp, $cache | Out-Null
+
+    $env:TEMP = $temp
+    $env:TMP = $temp
+    $env:ELECTRON_BUILDER_CACHE = $cache
+
+    Write-Host "Packaging from $script:SortifyNeutralRoot (temp and cache stay off your user profile)." -ForegroundColor DarkGray
+}
+
+function Sync-SortifyNeutralSource {
+    param(
+        [string]$RepoRoot = $PSScriptRoot
+    )
+
+    if (-not $script:SortifyNeutralRoot) {
+        Initialize-SortifyNeutralBuildEnvironment
+    }
+
+    New-Item -ItemType Directory -Force -Path $script:SortifyNeutralRoot | Out-Null
+    Write-Host "Copying project to a path that does not include your username..." -ForegroundColor Yellow
+
+    & robocopy $RepoRoot $script:SortifyNeutralRoot /MIR /XD release .git /XF builder-debug.yml builder-effective-config.yaml /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) {
+        Write-Error "Failed to copy the project to $($script:SortifyNeutralRoot) (robocopy exit $LASTEXITCODE)."
+        Read-Host -Prompt "Press Enter to exit"
+        exit $LASTEXITCODE
+    }
+}
+
+function Assert-SortifyReleaseHasNoIdentityLeaks {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ReleaseDir,
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot
+    )
+
+    if (-not ('Sortify.ReleaseScan' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+namespace Sortify {
+  public static class ReleaseScan {
+    public static bool Contains(byte[] haystack, byte[] needle) {
+      if (needle == null || needle.Length == 0 || haystack.Length < needle.Length) return false;
+      int last = haystack.Length - needle.Length;
+      for (int i = 0; i <= last; i++) {
+        int j = 0;
+        for (; j < needle.Length; j++) {
+          if (haystack[i + j] != needle[j]) break;
+        }
+        if (j == needle.Length) return true;
+      }
+      return false;
+    }
+  }
+}
+'@
+    }
+
+    $needles = New-Object System.Collections.Generic.List[string]
+    $profile = [Environment]::GetFolderPath('UserProfile')
+    if (-not [string]::IsNullOrWhiteSpace($profile)) {
+        $needles.Add($profile)
+        $needles.Add(($profile -replace '\\', '/'))
+    }
+
+    $repoFull = (Resolve-Path $RepoRoot).Path
+    $needles.Add($repoFull)
+    $needles.Add(($repoFull -replace '\\', '/'))
+
+    $user = $env:USERNAME
+    if (-not [string]::IsNullOrWhiteSpace($user)) {
+        $needles.Add("\Users\$user")
+        $needles.Add("/Users/$user")
+    }
+
+    $variants = New-Object System.Collections.Generic.List[string]
+    foreach ($needle in $needles) {
+        if ([string]::IsNullOrWhiteSpace($needle)) { continue }
+        foreach ($variant in @($needle, $needle.ToLowerInvariant(), $needle.ToUpperInvariant())) {
+            if (-not $variants.Contains($variant)) {
+                $variants.Add($variant)
+            }
+        }
+    }
+
+    $extensions = @('.exe', '.asar', '.yml', '.yaml', '.json', '.js', '.cjs', '.html', '.txt', '.nsh', '.ps1', '.blockmap')
+    $files = @(Get-ChildItem -Path $ReleaseDir -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object {
+        $extensions -contains $_.Extension.ToLowerInvariant()
+    })
+
+    $utf8 = [System.Text.Encoding]::UTF8
+    $unicode = [System.Text.Encoding]::Unicode
+
+    foreach ($file in $files) {
+        $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+        foreach ($variant in $variants) {
+            $found = [Sortify.ReleaseScan]::Contains($bytes, $utf8.GetBytes($variant)) -or
+                [Sortify.ReleaseScan]::Contains($bytes, $unicode.GetBytes($variant))
+            if ($found) {
+                Write-Error "Ship check failed: $($file.FullName) still contains this machine's user or project path ($variant)."
+                Read-Host -Prompt "Press Enter to exit"
+                exit 1
+            }
+        }
+    }
+
+    Write-Host "Ship check passed: installer output has no user profile or project path." -ForegroundColor Green
+}
+
+function Publish-SortifyCleanRelease {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot
+    )
+
+    $stagedRelease = Join-Path $script:SortifyNeutralRoot 'release'
+    if (-not (Test-Path $stagedRelease)) {
+        Write-Error "electron-builder did not produce $stagedRelease."
+        Read-Host -Prompt "Press Enter to exit"
+        exit 1
+    }
+
+    Get-ChildItem -Path $stagedRelease -Force -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -in @('builder-debug.yml', 'builder-effective-config.yaml') } |
+        Remove-Item -Force
+
+    Assert-SortifyReleaseHasNoIdentityLeaks -ReleaseDir $stagedRelease -RepoRoot $RepoRoot
+
+    $dest = Join-Path $RepoRoot 'release'
+    if (Test-Path $dest) {
+        Remove-Item -Recurse -Force $dest
+    }
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+
+    Get-ChildItem -Path $stagedRelease -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $dest $_.Name) -Recurse -Force
+    }
+
+    Write-Host "Copied shippable artifacts to $dest (builder-debug.yml omitted)." -ForegroundColor Green
+}
+
+function Invoke-SortifyElectronBuilder {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$BuilderArgs,
+        [string]$RepoRoot = $PSScriptRoot
+    )
+
+    Initialize-SortifyNeutralBuildEnvironment
+    Sync-SortifyNeutralSource -RepoRoot $RepoRoot
+
+    Push-Location $script:SortifyNeutralRoot
+    try {
+        & npx electron-builder @BuilderArgs
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Electron builder failed."
+            Read-Host -Prompt "Press Enter to exit"
+            exit $LASTEXITCODE
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
+    Publish-SortifyCleanRelease -RepoRoot $RepoRoot
+}
