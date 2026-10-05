@@ -42,6 +42,7 @@ function Install-SortifyBuildDependencies {
 
     if ($missing.Count -eq 0) {
         Write-Host "Build dependencies already present (vite, esbuild, electron-builder)." -ForegroundColor DarkGray
+        Initialize-SortifyNativeBuildTools -RepoRoot $RepoRoot
         return
     }
 
@@ -71,6 +72,59 @@ function Install-SortifyBuildDependencies {
     }
 
     Write-Host "Dependencies installed." -ForegroundColor Green
+    Initialize-SortifyNativeBuildTools -RepoRoot $RepoRoot
+}
+
+function Initialize-SortifyNativeBuildTools {
+    param(
+        [string]$RepoRoot = $PSScriptRoot
+    )
+
+    $electronExe = Join-Path $RepoRoot 'node_modules\electron\dist\electron.exe'
+    if (-not (Test-Path $electronExe)) {
+        $electronInstall = Join-Path $RepoRoot 'node_modules\electron\install.js'
+        if (-not (Test-Path $electronInstall)) {
+            Write-Error "Electron is installed but install.js is missing."
+            Read-Host -Prompt "Press Enter to exit"
+            exit 1
+        }
+        Write-Host "Downloading the Electron runtime..." -ForegroundColor Yellow
+        Push-Location $RepoRoot
+        try {
+            & node $electronInstall
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $electronExe)) {
+                Write-Error "Electron runtime install failed."
+                Read-Host -Prompt "Press Enter to exit"
+                exit 1
+            }
+        }
+        finally {
+            Pop-Location
+        }
+    }
+
+    $esbuildExe = Join-Path $RepoRoot 'node_modules\@esbuild\win32-x64\esbuild.exe'
+    if (-not (Test-Path $esbuildExe)) {
+        $esbuildInstall = Join-Path $RepoRoot 'node_modules\esbuild\install.js'
+        if (-not (Test-Path $esbuildInstall)) {
+            Write-Error "esbuild is installed but install.js is missing."
+            Read-Host -Prompt "Press Enter to exit"
+            exit 1
+        }
+        Write-Host "Installing the esbuild binary..." -ForegroundColor Yellow
+        Push-Location $RepoRoot
+        try {
+            & node $esbuildInstall
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $esbuildExe)) {
+                Write-Error "esbuild binary install failed."
+                Read-Host -Prompt "Press Enter to exit"
+                exit 1
+            }
+        }
+        finally {
+            Pop-Location
+        }
+    }
 }
 
 function Get-SortifyBuildVersion {
@@ -170,7 +224,13 @@ function Sync-SortifyNeutralSource {
     New-Item -ItemType Directory -Force -Path $script:SortifyNeutralRoot | Out-Null
     Write-Host "Copying project to a path that does not include your username..." -ForegroundColor Yellow
 
-    & robocopy $RepoRoot $script:SortifyNeutralRoot /MIR /XD release .git /XF builder-debug.yml builder-effective-config.yaml /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
+    # /XD matches the name anywhere, so a bare "release" also drops
+    # node_modules\bluebird\js\release and electron-builder cannot start.
+    $excludeDirs = @(
+        (Join-Path $RepoRoot 'release'),
+        (Join-Path $RepoRoot '.git')
+    )
+    & robocopy $RepoRoot $script:SortifyNeutralRoot /MIR /XD @excludeDirs /XF builder-debug.yml builder-effective-config.yaml /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
     if ($LASTEXITCODE -ge 8) {
         Write-Error "Failed to copy the project to $($script:SortifyNeutralRoot) (robocopy exit $LASTEXITCODE)."
         Read-Host -Prompt "Press Enter to exit"
@@ -300,6 +360,11 @@ function Invoke-SortifyElectronBuilder {
 
     Initialize-SortifyNeutralBuildEnvironment
     Sync-SortifyNeutralSource -RepoRoot $RepoRoot
+
+    $stagedRelease = Join-Path $script:SortifyNeutralRoot 'release'
+    if (Test-Path $stagedRelease) {
+        Remove-Item -Recurse -Force $stagedRelease
+    }
 
     Push-Location $script:SortifyNeutralRoot
     try {
