@@ -25,12 +25,7 @@ if (Test-Path "release") {
 Write-Host "Packaging portable build with Electron Builder (v$version)..." -ForegroundColor Yellow
 Write-Host "Code signing disabled (unsigned local builds)." -ForegroundColor DarkGray
 $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
-npx electron-builder --win portable --x64 "-c.extraMetadata.version=$version"
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Electron builder failed."
-    Read-Host -Prompt "Press Enter to exit"
-    exit $LASTEXITCODE
-}
+Invoke-SortifyElectronBuilder -BuilderArgs @('--win', 'portable', '--x64', "-c.extraMetadata.version=$version") -RepoRoot $PSScriptRoot
 
 Write-Host "Build complete! Portable exe is in the release directory (v$version)." -ForegroundColor Green
 exit 0
