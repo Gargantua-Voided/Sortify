@@ -351,6 +351,16 @@ function Publish-SortifyCleanRelease {
     Write-Host "Copied shippable artifacts to $dest (builder-debug.yml omitted)." -ForegroundColor Green
 }
 
+function Remove-SortifyNeutralBuild {
+    $root = Join-Path $env:SystemDrive 'SortifyBuild'
+    if (-not (Test-Path $root)) {
+        return
+    }
+
+    Write-Host "Removing staging folder $root..." -ForegroundColor DarkGray
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop
+}
+
 function Invoke-SortifyElectronBuilder {
     param(
         [Parameter(Mandatory = $true)]
@@ -380,4 +390,5 @@ function Invoke-SortifyElectronBuilder {
     }
 
     Publish-SortifyCleanRelease -RepoRoot $RepoRoot
+    Remove-SortifyNeutralBuild
 }

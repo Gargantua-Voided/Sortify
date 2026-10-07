@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, shell } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import { execFileSync } from 'child_process';
@@ -632,6 +632,12 @@ ipcMain.handle('set-custom-icons-enabled', async (_event, enabled: boolean) => {
   }
 
   return { settings: currentSettings, previews: getCategoryIconPreviews() };
+});
+
+ipcMain.handle('open-external', (_event, url: string) => {
+  if (typeof url !== 'string' || !url.startsWith('https://')) return false;
+  void shell.openExternal(url);
+  return true;
 });
 
 ipcMain.on('window-control', (event, action) => {

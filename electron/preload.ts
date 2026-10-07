@@ -18,5 +18,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   removeLogListener: () => {
     ipcRenderer.removeAllListeners('log-message');
   },
+  openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
   windowControl: (action: 'minimize' | 'maximize' | 'close') => ipcRenderer.send('window-control', action)
 });

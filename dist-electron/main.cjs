@@ -5616,6 +5616,11 @@ import_electron2.ipcMain.handle("set-custom-icons-enabled", async (_event, enabl
   }
   return { settings: currentSettings, previews: getCategoryIconPreviews() };
 });
+import_electron2.ipcMain.handle("open-external", (_event, url) => {
+  if (typeof url !== "string" || !url.startsWith("https://")) return false;
+  void import_electron2.shell.openExternal(url);
+  return true;
+});
 import_electron2.ipcMain.on("window-control", (event, action) => {
   if (!mainWindow) return;
   if (action === "minimize") mainWindow.minimize();

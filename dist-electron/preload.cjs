@@ -17,5 +17,6 @@ import_electron.contextBridge.exposeInMainWorld("electronAPI", {
   removeLogListener: () => {
     import_electron.ipcRenderer.removeAllListeners("log-message");
   },
+  openExternal: (url) => import_electron.ipcRenderer.invoke("open-external", url),
   windowControl: (action) => import_electron.ipcRenderer.send("window-control", action)
 });

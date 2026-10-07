@@ -329,6 +329,17 @@ export default function App() {
         </div>
         
         <div className="p-6 border-t border-slate-800 bg-slate-900/50">
+          <button
+            type="button"
+            onClick={() => window.electronAPI?.openExternal?.('https://www.patreon.com/ArbiterForge')}
+            title="Support ArbiterForge on Patreon"
+            className="w-full flex items-center gap-3 px-3 py-2 mb-4 rounded-md font-medium border border-slate-600 text-slate-200 hover:bg-slate-800 hover:text-white hover:border-slate-800 transition-colors"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" className="w-4 h-4 shrink-0" aria-hidden="true">
+              <path fill="#FF424D" d="M15.386.524c-4.764 0-8.64 3.876-8.64 8.64 0 4.75 3.876 8.613 8.64 8.613 4.75 0 8.614-3.864 8.614-8.613C24 4.4 20.136.524 15.386.524M.003 23.537h4.22V.524H.003" />
+            </svg>
+            ArbiterForge
+          </button>
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs text-slate-500 uppercase font-bold tracking-widest">Engine Status</span>
             <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>

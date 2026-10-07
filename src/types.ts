@@ -55,6 +55,7 @@ declare global {
       clearExplorerIconCache: () => Promise<{ ok: boolean; message: string }>;
       onLogMessage: (callback: (data: LogMessage) => void) => void;
       removeLogListener: () => void;
+      openExternal?: (url: string) => Promise<boolean>;
       windowControl?: (action: 'minimize' | 'maximize' | 'close') => void;
     };
   }
